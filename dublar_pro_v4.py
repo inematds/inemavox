@@ -1735,7 +1735,13 @@ def sync_pad(p, target, workdir, sr):
         return p
 
 def sync_smart_advanced(p, target, workdir, sr, tol, maxstretch, use_rubberband=True):
-    """Sincronizacao smart avancada"""
+    """Sincronizacao smart avancada
+
+    Logica:
+    - Se audio < target: adiciona silencio (pad) - nao distorce
+    - Se audio > target mas dentro de maxstretch: comprime (fit)
+    - Se audio > target * maxstretch: trunca em vez de distorcer muito
+    """
     cur = ffprobe_duration(p)
     if cur <= 0:
         return p
@@ -1744,9 +1750,16 @@ def sync_smart_advanced(p, target, workdir, sr, tol, maxstretch, use_rubberband=
     high = target * (1 + tol)
 
     if cur < low:
+        # Audio curto demais - adicionar silencio
         return sync_pad(p, target, workdir, sr)
     elif cur > high:
-        return sync_fit_advanced(p, target, workdir, sr, tol, maxstretch, use_rubberband)
+        # Audio longo demais
+        ratio = target / cur
+        if ratio < (1.0 / maxstretch):
+            # Distorcao seria muito grande - truncar em vez de comprimir
+            return sync_pad(p, target, workdir, sr)  # sync_pad tambem trunca
+        else:
+            return sync_fit_advanced(p, target, workdir, sr, tol, maxstretch, use_rubberband)
     else:
         return p
 
@@ -1972,7 +1985,7 @@ Exemplos:
     ap.add_argument("--sync", choices=["none", "fit", "pad", "smart"], default="smart",
                    help="Modo de sincronizacao")
     ap.add_argument("--tolerance", type=float, default=0.1, help="Tolerancia sync")
-    ap.add_argument("--maxstretch", type=float, default=2.0, help="Max compressao")
+    ap.add_argument("--maxstretch", type=float, default=1.3, help="Max compressao (1.3=30%)")
     ap.add_argument("--use-rubberband", action="store_true", help="Usar rubberband")
 
     # Outros
