@@ -854,6 +854,16 @@ def _clean_ollama_response(response, original_text):
         "Sure,",
         "Of course",
         "Happy to help",
+        "Please provide",
+        "provide the text",
+        "characters or less",
+        "character limit",
+        "(Translated to",
+        "Translated to Brazilian",
+        "I'd be happy",
+        "I can help",
+        "What would you like",
+        "Could you please",
     ]
 
     for pattern in invalid_patterns:
