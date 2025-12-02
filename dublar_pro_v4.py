@@ -2270,7 +2270,7 @@ Exemplos:
     # Traducao
     ap.add_argument("--tradutor", choices=["ollama", "m2m100"], default="m2m100",
                    help="Engine de traducao")
-    ap.add_argument("--modelo", default="llama3", help="Modelo Ollama")
+    ap.add_argument("--modelo", default="qwen2.5:14b", help="Modelo Ollama (padrao: qwen2.5:14b)")
     ap.add_argument("--large-model", action="store_true", help="Usar M2M100 1.2B")
 
     # TTS
