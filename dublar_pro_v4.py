@@ -771,11 +771,22 @@ def calcular_cps_original(audio_path, segments):
         return total_chars / total_dur
     return 13  # Default
 
-def ajustar_texto_para_duracao(texto, duracao_alvo, cps_original, idioma="pt"):
+def ajustar_texto_para_duracao(texto, duracao_alvo, cps_original, idioma="pt", no_truncate=False):
     """Ajusta texto para caber na duracao alvo baseado no CPS original
 
     FASE 2: CPS Adaptativo - usa o CPS real do video original
+
+    Args:
+        texto: Texto traduzido
+        duracao_alvo: Duracao em segundos do segmento original
+        cps_original: Caracteres por segundo do video original
+        idioma: Idioma do texto
+        no_truncate: Se True, nao trunca texto (frases completas, sync ajusta)
     """
+    # Se no_truncate ativado, retorna texto original sem modificacao
+    if no_truncate:
+        return texto
+
     # Usar CPS do audio original em vez do default do idioma
     cps_alvo = cps_original * 1.1  # 10% de margem
 
@@ -900,7 +911,7 @@ Concise translation (max {max_chars} chars):"""
         print(f"[WARN] Ollama erro: {e}")
         return None
 
-def translate_segments_ollama(segs, src, tgt, workdir, model="llama3", cps_original=None):
+def translate_segments_ollama(segs, src, tgt, workdir, model="llama3", cps_original=None, no_truncate=False):
     """Traducao com Ollama (LLM local) COM CONTEXTO"""
     print("\n" + "="*60)
     print(f"=== ETAPA 4: Traducao (Ollama - {model}) ===")
@@ -938,7 +949,7 @@ def translate_segments_ollama(segs, src, tgt, workdir, model="llama3", cps_origi
 
             # Ajustar para duracao usando CPS adaptativo
             if cps_original:
-                txt_final = ajustar_texto_para_duracao(txt_final, duracao_seg, cps_original, tgt)
+                txt_final = ajustar_texto_para_duracao(txt_final, duracao_seg, cps_original, tgt, no_truncate)
         else:
             txt_final = texto_original
 
@@ -978,7 +989,7 @@ def translate_segments_ollama(segs, src, tgt, workdir, model="llama3", cps_origi
 # TRADUCAO VIA M2M100 (MELHORADO v4)
 # ============================================================================
 
-def translate_segments_m2m100(segs, src, tgt, workdir, use_large_model=False, cps_original=None):
+def translate_segments_m2m100(segs, src, tgt, workdir, use_large_model=False, cps_original=None, no_truncate=False):
     """Traducao com M2M100 melhorado - max_length aumentado"""
     print("\n" + "="*60)
     print("=== ETAPA 4: Traducao (M2M100 Melhorado) ===")
@@ -1054,7 +1065,7 @@ def translate_segments_m2m100(segs, src, tgt, workdir, use_large_model=False, cp
 
             # CPS adaptativo
             if cps_original:
-                txt_final = ajustar_texto_para_duracao(txt_final, duracoes[j], cps_original, tgt)
+                txt_final = ajustar_texto_para_duracao(txt_final, duracoes[j], cps_original, tgt, no_truncate)
 
             item["text_trad"] = txt_final
             item["text_original"] = segs[i].get("text", "")
@@ -2087,6 +2098,8 @@ Exemplos:
     ap.add_argument("--tolerance", type=float, default=0.1, help="Tolerancia sync")
     ap.add_argument("--maxstretch", type=float, default=1.3, help="Max compressao (1.3=30%)")
     ap.add_argument("--no-rubberband", action="store_true", help="Desabilitar rubberband (usar ffmpeg atempo)")
+    ap.add_argument("--no-truncate", action="store_true",
+                   help="Nao truncar texto traduzido (frases completas, sync ajusta duracao)")
 
     # Outros
     ap.add_argument("--maxdur", type=float, default=10.0, help="Duracao maxima segmento")
@@ -2202,18 +2215,21 @@ Exemplos:
 
     # ========== ETAPA 4: Traducao ==========
     t_etapa = time.time()
+    no_truncate = getattr(args, 'no_truncate', False)
+    if no_truncate:
+        print("[INFO] Modo --no-truncate ativado: frases completas, sync ajusta duracao")
     if args.tradutor == "ollama":
-        result = translate_segments_ollama(segs, src_lang, args.tgt, workdir, args.modelo, cps_original)
+        result = translate_segments_ollama(segs, src_lang, args.tgt, workdir, args.modelo, cps_original, no_truncate)
         if result is None:
             print("[INFO] Fallback para M2M100...")
             segs_trad, trad_json, trad_srt = translate_segments_m2m100(
-                segs, src_lang, args.tgt, workdir, args.large_model, cps_original
+                segs, src_lang, args.tgt, workdir, args.large_model, cps_original, no_truncate
             )
         else:
             segs_trad, trad_json, trad_srt = result
     else:
         segs_trad, trad_json, trad_srt = translate_segments_m2m100(
-            segs, src_lang, args.tgt, workdir, args.large_model, cps_original
+            segs, src_lang, args.tgt, workdir, args.large_model, cps_original, no_truncate
         )
     save_checkpoint(workdir, 4, "translation")
     tempos_etapas["4_traducao"] = time.time() - t_etapa
