@@ -1000,12 +1000,13 @@ def translate_ollama_with_context(text, src_lang, tgt_lang, model="llama3",
     # Calcular limite de caracteres
     max_chars = int(target_duration * cps_original * 1.1) if target_duration and cps_original else len(text)
 
-    # PROMPT SIMPLES - llama3 se confunde com instruções complexas
-    prompt = f"""Translate to {tgt_name}. Maximum {max_chars} characters. Be concise.
+    # Prompt balanceado - claro mas sem instruções que o modelo repete
+    prompt = f"""You are a translator. Translate the text from {src_name} to {tgt_name}.
+Output ONLY the translation, nothing else. Maximum {max_chars} characters.
 
-{text}
+Text: {text}
 
-Translation:"""
+{tgt_name}:"""
 
     try:
         response = httpx.post(
