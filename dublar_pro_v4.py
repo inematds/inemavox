@@ -688,6 +688,140 @@ def transcribe_faster_whisper(wav_path, workdir, src_lang, model_size="medium", 
     print(f"[OK] Transcrito: {len(segs)} segmentos")
     return json_path, srt_path, segs, detected_lang
 
+
+# ============================================================================
+# ETAPA 3B: TRANSCRICAO (NVIDIA PARAKEET) - ALTERNATIVA
+# ============================================================================
+
+def transcribe_parakeet(wav_path, workdir, src_lang=None, model_name="nvidia/parakeet-tdt-1.1b",
+                        segment_pause=0.3, segment_max_words=15):
+    """Transcricao com NVIDIA Parakeet (NeMo)
+
+    Mais rapido que Whisper, otimizado para GPUs NVIDIA.
+
+    Args:
+        wav_path: Caminho do arquivo WAV
+        workdir: Diretorio de trabalho
+        src_lang: Idioma origem (Parakeet so suporta ingles por enquanto)
+        model_name: Modelo Parakeet (tdt-1.1b, ctc-1.1b, rnnt-1.1b)
+        segment_pause: Pausa minima (segundos) para criar novo segmento
+        segment_max_words: Maximo de palavras por segmento
+
+    Returns: (json_path, srt_path, segments, detected_language)
+    """
+    print("\n" + "="*60)
+    print("=== ETAPA 3: Transcricao (NVIDIA Parakeet) ===")
+    print("="*60)
+
+    try:
+        import nemo.collections.asr as nemo_asr
+    except ImportError:
+        print("[ERRO] NeMo nao instalado. Instale com: pip install nemo_toolkit[asr]")
+        print("[WARN] Usando Whisper como fallback...")
+        return transcribe_faster_whisper(wav_path, workdir, src_lang)
+
+    import torch
+
+    print(f"[INFO] Modelo: {model_name}")
+    print(f"[INFO] Segmentacao: pausa > {segment_pause}s ou > {segment_max_words} palavras")
+
+    if torch.cuda.is_available():
+        print(f"[INFO] GPU: {torch.cuda.get_device_name(0)}")
+    else:
+        print("[WARN] GPU nao disponivel, Parakeet sera lento em CPU")
+
+    # Carregar modelo
+    print("[INFO] Carregando modelo Parakeet...")
+    model = nemo_asr.models.ASRModel.from_pretrained(model_name)
+    if torch.cuda.is_available():
+        model = model.cuda()
+
+    # Transcrever com timestamps
+    print("[INFO] Transcrevendo...")
+    output = model.transcribe([str(wav_path)], timestamps=True)
+
+    # Processar resultado
+    hyp = output[0][0] if isinstance(output[0], list) else output[0]
+
+    segs = []
+    detected_lang = "en"  # Parakeet so suporta ingles por enquanto
+
+    # Extrair timestamps por palavra e agrupar em segmentos
+    if hasattr(hyp, 'timestamp') and hyp.timestamp and 'word' in hyp.timestamp:
+        words = hyp.timestamp['word']
+
+        current_seg = {"start": 0, "end": 0, "words": []}
+
+        for w in words:
+            start = w.get('start', 0)
+            end = w.get('end', 0)
+            word = w.get('word', '')
+
+            if not current_seg["words"]:
+                # Primeiro palavra do segmento
+                current_seg["start"] = start
+                current_seg["end"] = end
+                current_seg["words"].append(word)
+            elif (start - current_seg["end"] > segment_pause or
+                  len(current_seg["words"]) >= segment_max_words):
+                # Nova pausa ou limite de palavras - criar novo segmento
+                segs.append({
+                    "start": current_seg["start"],
+                    "end": current_seg["end"],
+                    "text": " ".join(current_seg["words"])
+                })
+                current_seg = {"start": start, "end": end, "words": [word]}
+            else:
+                # Continua no mesmo segmento
+                current_seg["end"] = end
+                current_seg["words"].append(word)
+
+        # Ultimo segmento
+        if current_seg["words"]:
+            segs.append({
+                "start": current_seg["start"],
+                "end": current_seg["end"],
+                "text": " ".join(current_seg["words"])
+            })
+    else:
+        # Fallback: texto completo sem segmentacao
+        text = hyp.text if hasattr(hyp, 'text') else str(hyp)
+        segs.append({
+            "start": 0,
+            "end": 0,
+            "text": text
+        })
+        print("[WARN] Parakeet nao retornou timestamps, usando texto completo")
+
+    # Salvar arquivos
+    json_path = Path(workdir) / "asr.json"
+    srt_path = Path(workdir) / "asr.srt"
+
+    # SRT
+    with open(srt_path, "w", encoding="utf-8") as f:
+        for i, seg in enumerate(segs, 1):
+            start_ts = ts_stamp(seg["start"])
+            end_ts = ts_stamp(seg["end"])
+            f.write(f"{i}\n{start_ts} --> {end_ts}\n{seg['text']}\n\n")
+
+    # JSON
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "language": detected_lang,
+            "language_specified": src_lang,
+            "asr_engine": "parakeet",
+            "model": model_name,
+            "segmentation": {
+                "pause_threshold": segment_pause,
+                "max_words": segment_max_words
+            },
+            "segments": segs,
+        }, f, ensure_ascii=False, indent=2)
+
+    print(f"[OK] Transcrito: {len(segs)} segmentos")
+    return json_path, srt_path, segs, detected_lang
+
+
 # ============================================================================
 # ETAPA 4: TRADUCAO - FUNCOES AUXILIARES
 # ============================================================================
@@ -2255,6 +2389,12 @@ Exemplos:
 
   # Maxima qualidade
   python dublar_pro_v4.py --in video.mp4 --src en --tgt pt --qualidade maximo
+
+  # Usando Parakeet (NVIDIA) - mais rapido que Whisper
+  python dublar_pro_v4.py --in video.mp4 --tgt pt --asr parakeet
+
+  # Parakeet com segmentacao customizada
+  python dublar_pro_v4.py --in video.mp4 --tgt pt --asr parakeet --segment-pause 0.5 --segment-max-words 20
         """
     )
 
@@ -2283,10 +2423,19 @@ Exemplos:
     ap.add_argument("--max-retries", type=int, default=2, help="Max retries TTS")
     ap.add_argument("--clonar-voz", action="store_true", help="Clonar voz do video original (XTTS)")
 
-    # Whisper
+    # ASR (Transcricao)
+    ap.add_argument("--asr", choices=["whisper", "parakeet"], default="whisper",
+                   help="Engine de transcricao (padrao: whisper)")
     ap.add_argument("--whisper-model", default="large-v3",
                    choices=["tiny", "small", "medium", "large", "large-v2", "large-v3"],
                    help="Modelo Whisper (padrao: large-v3)")
+    ap.add_argument("--parakeet-model", default="nvidia/parakeet-tdt-1.1b",
+                   choices=["nvidia/parakeet-tdt-1.1b", "nvidia/parakeet-ctc-1.1b", "nvidia/parakeet-rnnt-1.1b"],
+                   help="Modelo Parakeet (padrao: tdt-1.1b)")
+    ap.add_argument("--segment-pause", type=float, default=0.3,
+                   help="Parakeet: pausa minima (segundos) para novo segmento (padrao: 0.3)")
+    ap.add_argument("--segment-max-words", type=int, default=15,
+                   help="Parakeet: maximo de palavras por segmento (padrao: 15)")
 
     # Diarizacao
     ap.add_argument("--diarize", action="store_true", help="Detectar multiplos falantes")
@@ -2398,10 +2547,18 @@ Exemplos:
 
     # ========== ETAPA 3: Transcricao ==========
     t_etapa = time.time()
-    asr_json, asr_srt, segs, detected_lang = transcribe_faster_whisper(
-        audio_src, workdir, args.src, args.whisper_model,
-        diarize=args.diarize, num_speakers=args.num_speakers
-    )
+    if args.asr == "parakeet":
+        asr_json, asr_srt, segs, detected_lang = transcribe_parakeet(
+            audio_src, workdir, args.src,
+            model_name=args.parakeet_model,
+            segment_pause=args.segment_pause,
+            segment_max_words=args.segment_max_words
+        )
+    else:
+        asr_json, asr_srt, segs, detected_lang = transcribe_faster_whisper(
+            audio_src, workdir, args.src, args.whisper_model,
+            diarize=args.diarize, num_speakers=args.num_speakers
+        )
     save_checkpoint(workdir, 3, "transcription")
     tempos_etapas["3_transcricao"] = time.time() - t_etapa
 
