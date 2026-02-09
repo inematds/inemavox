@@ -1,4 +1,6 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// API calls use relative URLs → routed through Next.js rewrites proxy
+// This works whether accessing via localhost or remote IP
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
 
 async function fetchApi(path: string, options?: RequestInit) {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -53,6 +55,9 @@ export function getSubtitlesUrl(jobId: string, lang = "trad") {
 }
 
 export function createJobWebSocket(jobId: string): WebSocket {
-  const wsBase = API_BASE.replace("http", "ws");
-  return new WebSocket(`${wsBase}/ws/jobs/${jobId}`);
+  const wsProtocol = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss:" : "ws:";
+  const wsHost = typeof window !== "undefined" ? window.location.host : "localhost:8000";
+  // WebSocket goes directly to backend on port 8000 (Next.js doesn't proxy WS)
+  const backendHost = wsHost.replace(":3000", ":8000");
+  return new WebSocket(`${wsProtocol}//${backendHost}/ws/jobs/${jobId}`);
 }

@@ -6,12 +6,16 @@ import os
 import signal
 import subprocess
 import time
+import shutil
+import sys
 import uuid
 from pathlib import Path
 from typing import Optional
 
 JOBS_DIR = Path(os.environ.get("JOBS_DIR", "jobs"))
 PIPELINE_SCRIPT = os.environ.get("PIPELINE_SCRIPT", "dublar_pro_v4.py")
+# Use the same python that's running the API, or find python3
+PYTHON_BIN = os.environ.get("PYTHON_BIN", sys.executable or shutil.which("python3") or "python3")
 USE_DOCKER = os.environ.get("USE_DOCKER", "0") == "1"
 
 
@@ -131,12 +135,20 @@ class JobManager:
         log_path = job.workdir / "output.log"
 
         try:
+            # Herdar PATH do processo atual (venv) para que yt-dlp, ffmpeg etc. sejam encontrados
+            env = os.environ.copy()
+            # Garantir que o diretorio bin do venv esta no PATH
+            python_dir = os.path.dirname(PYTHON_BIN)
+            if python_dir not in env.get("PATH", ""):
+                env["PATH"] = python_dir + ":" + env.get("PATH", "")
+
             with open(log_path, "w") as log_file:
                 job.process = subprocess.Popen(
                     cmd,
                     stdout=log_file,
                     stderr=subprocess.STDOUT,
                     cwd=str(job.workdir),
+                    env=env,
                 )
 
                 # Monitorar o processo
@@ -168,7 +180,7 @@ class JobManager:
     def _build_command(self, job: Job) -> list:
         """Constroi comando do pipeline a partir da config."""
         config = job.config
-        cmd = ["python", os.path.abspath(PIPELINE_SCRIPT)]
+        cmd = [PYTHON_BIN, os.path.abspath(PIPELINE_SCRIPT)]
 
         # Input
         cmd.extend(["--in", config["input"]])
@@ -179,7 +191,7 @@ class JobManager:
         cmd.extend(["--tgt", config.get("tgt_lang", "pt")])
 
         # Output
-        cmd.extend(["--outdir", str(job.workdir / "dublado")])
+        cmd.extend(["--outdir", str(job.workdir.resolve() / "dublado")])
 
         # ASR
         asr = config.get("asr_engine", "whisper")
