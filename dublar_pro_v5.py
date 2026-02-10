@@ -1016,19 +1016,84 @@ def calcular_cps_original(audio_path, segments):
         return total_chars / total_dur
     return 13  # Default
 
+def _remover_fillers(texto, idioma="pt"):
+    """Remove palavras de enchimento/fillers de um texto.
+
+    Funciona para texto fonte (antes de traduzir) e traduzido (depois).
+    """
+    # Fillers por idioma
+    fillers = {
+        "pt": [
+            # Multi-palavra primeiro (antes de remover partes delas)
+            r'\bna verdade\b', r'\bveja bem\b', r'\bpois e\b', r'\bpois é\b',
+            r'\bvamos dizer\b', r'\bpor assim dizer\b', r'\bde certa forma\b',
+            r'\bde qualquer forma\b', r'\bde qualquer maneira\b',
+            r'\bquero dizer\b', r'\bem fim\b',
+            # Palavras simples
+            r'\bentao\b', r'\bné\b', r'\bne\b', r'\bbom\b', r'\btipo\b',
+            r'\bassim\b', r'\baí\b', r'\bai\b', r'\blá\b', r'\bla\b',
+            r'\bbasicamente\b', r'\bgeralmente\b',
+            r'\bsimplesmente\b', r'\brealmente\b', r'\bcertamente\b',
+            r'\bobviamente\b', r'\bnaturalmente\b', r'\bprovavelmente\b',
+            r'\bpraticamente\b', r'\bdefinitivamente\b', r'\bdigamos\b',
+            r'\bsabe\b', r'\bveja\b', r'\bolha\b', r'\benfim\b',
+        ],
+        "en": [
+            # Multi-word (seguros, nunca sao parte de frase essencial)
+            r'\byou know\b', r'\bI mean\b', r'\bkind of\b', r'\bsort of\b',
+            r'\bso yeah\b', r'\bpretty much\b',
+            # Seguros (raramente essenciais)
+            r'\bbasically\b', r'\bactually\b', r'\bliterally\b', r'\bhonestly\b',
+            r'\bessentially\b', r'\bobviously\b', r'\bclearly\b', r'\bapparently\b',
+            r'\banyway\b', r'\banyways\b',
+            # So no inicio de frase (comuns demais no meio)
+            r'(?:^|(?<=\.\s))So,?\s', r'(?:^|(?<=\.\s))Well,?\s',
+            r'(?:^|(?<=\.\s))Okay,?\s', r'(?:^|(?<=\.\s))Yeah,?\s',
+            r'(?:^|(?<=\.\s))Right,?\s', r'(?:^|(?<=\.\s))Like,?\s',
+            # Hesitacoes (sempre fillers)
+            r'\bum\b', r'\buh\b',
+        ],
+        "es": [
+            r'\bbueno\b', r'\bpues\b', r'\bentonces\b', r'\bosea\b',
+            r'\bo sea\b', r'\bdigamos\b', r'\bbasicamente\b', r'\brealmente\b',
+            r'\ben realidad\b', r'\bla verdad\b', r'\bsabes\b',
+        ],
+        "fr": [
+            r'\bbon\b', r'\bdonc\b', r'\ben fait\b', r'\bvoilà\b',
+            r'\bquoi\b', r'\bgenre\b', r'\bdu coup\b', r'\bfranchement\b',
+            r'\bbasiquement\b', r'\bvraiment\b',
+        ],
+    }
+
+    # Usar fillers do idioma ou default vazio
+    lang_fillers = fillers.get(idioma, fillers.get(idioma[:2] if len(idioma) > 2 else idioma, []))
+    if not lang_fillers:
+        return texto
+
+    resultado = texto
+    for pattern in lang_fillers:
+        # Remover filler + virgula/espaco adjacente
+        resultado = re.sub(pattern + r'\s*,?\s*', ' ', resultado, flags=re.IGNORECASE)
+    # Limpar pontuacao residual
+    resultado = re.sub(r' +', ' ', resultado)           # espacos duplos
+    resultado = re.sub(r'\s*,\s*,', ',', resultado)     # virgulas duplas
+    resultado = re.sub(r'^\s*,\s*', '', resultado)      # virgula no inicio
+    resultado = re.sub(r'\.\s*\.', '.', resultado)      # pontos duplos
+    return resultado.strip()
+
+
 def ajustar_texto_para_duracao(texto, duracao_alvo, cps_original, idioma="pt", no_truncate=False):
     """Ajusta texto para caber na duracao alvo baseado no CPS original
 
-    FASE 2: CPS Adaptativo - usa o CPS real do video original
-
-    Args:
-        texto: Texto traduzido
-        duracao_alvo: Duracao em segundos do segmento original
-        cps_original: Caracteres por segundo do video original
-        idioma: Idioma do texto
-        no_truncate: Se True, nao trunca texto (frases completas, sync ajusta)
+    Estrategia em camadas:
+    1. Remover fillers/enchimentos (sempre, nao perde sentido)
+    2. Se ainda nao cabe e ratio >= 0.7, truncar mantendo sentido
+    3. Se no_truncate, nunca trunca (sync ajusta duracao)
     """
-    # Se no_truncate ativado, retorna texto original sem modificacao
+    # Passo 1: SEMPRE remover fillers (nao perde sentido, so ajuda)
+    texto = _remover_fillers(texto, idioma)
+
+    # Se no_truncate ativado, retorna apos limpar fillers
     if no_truncate:
         return texto
 
@@ -1041,25 +1106,11 @@ def ajustar_texto_para_duracao(texto, duracao_alvo, cps_original, idioma="pt", n
     if chars_atual <= chars_alvo:
         return texto  # OK, cabe
 
-    # Precisa reduzir
+    # Precisa reduzir mais
     ratio = chars_alvo / chars_atual
 
-    if ratio >= 0.9:
-        # Pequena reducao - remover enchimentos
-        enchimentos = [
-            r'\bna verdade\b', r'\bbasicamente\b', r'\bgeralmente\b',
-            r'\bsimplesmente\b', r'\brealmente\b', r'\bcertamente\b',
-            r'\bobviamente\b', r'\bnaturalmente\b', r'\bprovavelmente\b',
-            r'\bpraticamente\b', r'\bdefinitivamente\b',
-        ]
-        simplificado = texto
-        for pattern in enchimentos:
-            simplificado = re.sub(pattern, '', simplificado, flags=re.IGNORECASE)
-        simplificado = re.sub(r' +', ' ', simplificado).strip()
-        return simplificado
-
-    elif ratio >= 0.7:
-        # Reducao media - truncar mantendo sentido
+    if ratio >= 0.7:
+        # Truncar mantendo sentido - corta palavras do final
         palavras = texto.split()
         palavras_alvo = int(len(palavras) * ratio)
         simplificado = ' '.join(palavras[:palavras_alvo])
@@ -1068,7 +1119,7 @@ def ajustar_texto_para_duracao(texto, duracao_alvo, cps_original, idioma="pt", n
         return simplificado
 
     else:
-        # Reducao grande - deixar texto original (sync vai ajustar)
+        # Reducao muito grande - deixar texto (sync vai ajustar velocidade)
         return texto
 
 # ============================================================================
@@ -1349,8 +1400,11 @@ def translate_segments_ollama(segs, src, tgt, workdir, model="llama3", cps_origi
         texto_original = s.get("text", "")
         duracao_seg = s["end"] - s["start"]
 
+        # Limpar fillers do texto fonte antes de traduzir
+        texto_limpo = _remover_fillers(texto_original, src)
+
         # Proteger termos tecnicos
-        texto_protegido, mapa = proteger_termos_tecnicos(texto_original)
+        texto_protegido, mapa = proteger_termos_tecnicos(texto_limpo)
 
         # Traduzir via Ollama COM CONTEXTO
         translated = translate_ollama_with_context(
@@ -1525,7 +1579,9 @@ def translate_segments_m2m100(segs, src, tgt, workdir, use_large_model=False, cp
 
     for i, s in enumerate(segs):
         texto_original = s.get("text", "")
-        texto_protegido, mapa = proteger_termos_tecnicos(texto_original)
+        # Limpar fillers do texto fonte antes de traduzir
+        texto_limpo = _remover_fillers(texto_original, src)
+        texto_protegido, mapa = proteger_termos_tecnicos(texto_limpo)
 
         batch.append(texto_protegido)
         idxs.append(i)
