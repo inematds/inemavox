@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from api.job_manager import JobManager
 from api.model_manager import get_ollama_models, get_ollama_status, unload_ollama_model, get_all_options
 from api.system_monitor import get_system_status
+from api.stats_tracker import get_stats_summary
 
 JOBS_DIR = Path(os.environ.get("JOBS_DIR", "jobs"))
 UPLOAD_DIR = JOBS_DIR / "uploads"
@@ -29,8 +30,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Dublar Pro API",
-    version="4.0.0",
+    title="Dublar v5 API",
+    version="5.1.0",
     description="API para pipeline de dublagem automatica de videos",
     lifespan=lifespan,
 )
@@ -214,9 +215,15 @@ async def websocket_job_progress(websocket: WebSocket, job_id: str):
 
 # --- Health ---
 
+@app.get("/api/stats")
+async def pipeline_stats():
+    """Estatisticas do pipeline (tempos medios, ETAs aprendidos)."""
+    return get_stats_summary()
+
+
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "4.0.0"}
+    return {"status": "ok", "version": "5.1.0"}
 
 
 if __name__ == "__main__":

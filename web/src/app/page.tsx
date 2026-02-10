@@ -106,18 +106,29 @@ export default function Dashboard() {
           <div className="space-y-3">
             {activeJobs.map((job) => {
               const progress = (job.progress || {}) as Record<string, unknown>;
+              const device = String(job.device || progress.device || "cpu");
               return (
                 <a key={String(job.id)} href={`/jobs/${job.id}`}
                   className="block border border-blue-500/30 bg-blue-500/5 rounded-lg p-4 hover:bg-blue-500/10 transition-colors">
                   <div className="flex justify-between items-center">
-                    <div>
+                    <div className="flex items-center gap-2">
                       <span className="font-medium">{String(job.id)}</span>
-                      <span className="text-gray-400 ml-3 text-sm">
+                      <span className={`px-1.5 py-0.5 rounded text-xs font-bold ${
+                        device === "cuda" ? "bg-green-500/20 text-green-400 border border-green-500/30" : "bg-yellow-500/20 text-yellow-400 border border-yellow-500/30"
+                      }`}>
+                        {device === "cuda" ? "GPU" : "CPU"}
+                      </span>
+                      <span className="text-gray-400 text-sm">
                         {String((job.config as Record<string, unknown>)?.tgt_lang || "pt")} |{" "}
                         {String((job.config as Record<string, unknown>)?.tts_engine || "edge")}
                       </span>
                     </div>
-                    <span className="text-blue-400 font-mono">{String(progress.percent || 0)}%</span>
+                    <div className="text-right">
+                      <span className="text-blue-400 font-mono">{String(progress.percent || 0)}%</span>
+                      {!!progress.eta_text && (
+                        <div className="text-xs text-gray-500">ETA: {String(progress.eta_text)}</div>
+                      )}
+                    </div>
                   </div>
                   <div className="mt-2 bg-gray-800 rounded-full h-2">
                     <div
@@ -149,6 +160,7 @@ export default function Dashboard() {
                 <tr>
                   <th className="text-left px-4 py-3">ID</th>
                   <th className="text-left px-4 py-3">Status</th>
+                  <th className="text-left px-4 py-3">Device</th>
                   <th className="text-left px-4 py-3">Idioma</th>
                   <th className="text-left px-4 py-3">TTS</th>
                   <th className="text-left px-4 py-3">Duracao</th>
@@ -164,6 +176,7 @@ export default function Dashboard() {
                     cancelled: "text-gray-400",
                   };
                   const config = (job.config || {}) as Record<string, unknown>;
+                  const device = String(job.device || "cpu");
                   return (
                     <tr key={String(job.id)} className="border-t border-gray-800 hover:bg-gray-900/50">
                       <td className="px-4 py-3">
@@ -173,6 +186,13 @@ export default function Dashboard() {
                       </td>
                       <td className={`px-4 py-3 ${statusColors[String(job.status)] || ""}`}>
                         {String(job.status)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`px-1.5 py-0.5 rounded text-xs font-bold ${
+                          device === "cuda" ? "bg-green-500/20 text-green-400" : "bg-yellow-500/20 text-yellow-400"
+                        }`}>
+                          {device === "cuda" ? "GPU" : "CPU"}
+                        </span>
                       </td>
                       <td className="px-4 py-3">
                         {String(config.src_lang || "auto")} &rarr; {String(config.tgt_lang || "pt")}

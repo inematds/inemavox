@@ -1,4 +1,6 @@
-# Dublar Pro v4 - Backend API com GPU
+# Dublar v5 - Backend API com GPU
+# Neste modo, o backend E o pipeline rodam dentro do mesmo container
+# com acesso direto a GPU via PyTorch NVIDIA
 FROM nvcr.io/nvidia/pytorch:25.01-py3
 
 WORKDIR /app
@@ -35,12 +37,16 @@ RUN pip install --no-cache-dir \
 RUN pip install --no-cache-dir --no-deps \
     faster-whisper ctranslate2 tokenizers huggingface-hub
 
-RUN pip install --no-cache-dir av pyyaml
+RUN pip install --no-cache-dir av pyyaml onnxruntime
 
 RUN pip install --no-cache-dir --no-deps \
     bark encodec funcy
 
 RUN pip install --no-cache-dir --no-deps transformers safetensors accelerate
+
+# OpenAI Whisper (usa PyTorch CUDA diretamente - fallback para ARM64 onde CTranslate2 nao tem CUDA)
+RUN pip install --no-cache-dir --no-deps openai-whisper
+RUN pip install --no-cache-dir tiktoken more-itertools
 
 # Verificar PyTorch NVIDIA preservado
 RUN python -c "\
@@ -59,4 +65,6 @@ RUN mkdir -p /app/dub_work /app/dublado /app/jobs
 
 EXPOSE 8000
 
+# No modo docker-compose, PYTHON_BIN=python usa o Python do container (com CUDA)
+# O job_manager roda o pipeline como subprocess usando este mesmo Python
 CMD ["uvicorn", "api.server:app", "--host", "0.0.0.0", "--port", "8000"]

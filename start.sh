@@ -102,6 +102,14 @@ else
     warn "GPU: nao detectada (pipeline rodara em CPU)"
 fi
 
+# 6.1 Verificar Docker GPU image
+if docker image inspect dublar-pro:gpu &>/dev/null 2>&1; then
+    log "Docker GPU: ${GREEN}dublar-pro:gpu disponivel${NC} (pipeline rodara com GPU via Docker)"
+else
+    warn "Docker GPU: imagem dublar-pro:gpu nao encontrada (pipeline rodara em CPU)"
+    warn "  Para habilitar GPU: docker build -t dublar-pro:gpu ."
+fi
+
 echo ""
 
 # 7. Criar diretorio de jobs

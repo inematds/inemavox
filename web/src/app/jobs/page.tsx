@@ -99,6 +99,13 @@ export default function JobsPage() {
                     <span className={`px-2 py-0.5 rounded-full text-xs border ${statusColors[String(job.status)] || ""}`}>
                       {String(job.status)}
                     </span>
+                    <span className={`px-1.5 py-0.5 rounded text-xs font-bold ${
+                      String(job.device || "cpu") === "cuda"
+                        ? "bg-green-500/20 text-green-400 border border-green-500/30"
+                        : "bg-yellow-500/20 text-yellow-400 border border-yellow-500/30"
+                    }`}>
+                      {String(job.device || "cpu") === "cuda" ? "GPU" : "CPU"}
+                    </span>
                   </div>
                   <div className="text-sm text-gray-500">
                     {String(config.src_lang || "auto")} &rarr; {String(config.tgt_lang || "pt")}
@@ -122,7 +129,12 @@ export default function JobsPage() {
                         Etapa: {String(progress.stage_name || "...")} ({String(progress.current_stage || 0)}/
                         {String(progress.total_stages || 10)})
                       </span>
-                      <span>{String(progress.percent || 0)}%</span>
+                      <div className="flex items-center gap-3">
+                        {!!progress.eta_text && (
+                          <span>ETA: {String(progress.eta_text)}</span>
+                        )}
+                        <span className="font-mono">{String(progress.percent || 0)}%</span>
+                      </div>
                     </div>
                   </>
                 )}

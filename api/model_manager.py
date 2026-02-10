@@ -80,22 +80,53 @@ TRANSLATION_ENGINES = [
 
 CONTENT_TYPES = [
     {
-        "id": "apresentacao",
-        "name": "Apresentacao / Demo",
-        "description": "Tutorial, screencast, demo de software. Timing critico.",
-        "presets": {"sync": "smart", "maxstretch": 1.15, "tolerance": 0.05},
-    },
-    {
         "id": "palestra",
         "name": "Palestra / Talking Head",
-        "description": "Vlog, entrevista, podcast com video. Timing moderado.",
+        "description": "Vlog, entrevista, podcast com video. Equilibra timing e conteudo.",
+        "detail": "Comprime a fala ate 30% para caber no tempo original. Se a frase traduzida for muito longa, corta palavras do final para manter sincronia com o video. Bom para quando o apresentador aparece na tela e o timing labial importa moderadamente.",
         "presets": {"sync": "smart", "maxstretch": 1.3, "tolerance": 0.1},
     },
     {
-        "id": "geral",
-        "name": "Conteudo Geral",
-        "description": "Documentario, narracao, sem apresentador. Timing livre.",
+        "id": "curso",
+        "name": "Curso / Aula",
+        "description": "Conteudo educacional. Nunca corta frases, comprime bastante se preciso.",
+        "detail": "Mantem todas as frases completas sem cortar nenhuma palavra. Se a traducao ficar mais longa que o original, comprime a velocidade da fala em ate 2x. Ideal para cursos e aulas onde perder conteudo e inaceitavel, mesmo que a fala fique um pouco mais rapida.",
+        "presets": {"sync": "smart", "maxstretch": 2.0, "no_truncate": True},
+    },
+    {
+        "id": "podcast",
+        "name": "Podcast / Entrevista",
+        "description": "Conversa longa. Frases completas, velocidade moderada.",
+        "detail": "Mantem frases completas e comprime ate 50% se necessario. Bom equilibrio entre preservar o conteudo e nao distorcer demais a voz. Para podcasts e entrevistas longas onde o ouvinte precisa de todo o contexto.",
         "presets": {"sync": "fit", "maxstretch": 1.5, "no_truncate": True},
+    },
+    {
+        "id": "apresentacao",
+        "name": "Apresentacao / Demo",
+        "description": "Tutorial, screencast, demo de software. Timing preciso com a tela.",
+        "detail": "Prioriza sincronizacao com o que acontece na tela. Comprime ate 15% e corta texto se necessario para que a fala acompanhe as acoes no video. Essencial para demos onde o narrador diz 'clique aqui' e o cursor se move.",
+        "presets": {"sync": "smart", "maxstretch": 1.15, "tolerance": 0.05},
+    },
+    {
+        "id": "narracao",
+        "name": "Narracao / Documentario",
+        "description": "Sem apresentador. Voz natural, video congela se preciso.",
+        "detail": "Fala 100% natural sem nenhuma compressao ou corte. Se a traducao for mais longa que o original, o video congela no ultimo frame ate a fala terminar. O video final pode ficar mais longo que o original. Perfeito para documentarios e narracoes onde a qualidade da voz e prioridade maxima.",
+        "presets": {"sync": "extend", "maxstretch": 2.0, "no_truncate": True},
+    },
+    {
+        "id": "shorts",
+        "name": "Shorts / Reels",
+        "description": "Video curto. Timing exato, cada frame importa.",
+        "detail": "Timing ultra-preciso para videos curtos onde cada segundo conta. Comprime no maximo 10% e corta texto agressivamente se necessario. A duracao do video e identica ao original. Para TikTok, Reels, Shorts onde a sincronia visual e critica.",
+        "presets": {"sync": "smart", "maxstretch": 1.1, "tolerance": 0.03},
+    },
+    {
+        "id": "filme",
+        "name": "Filme / Serie",
+        "description": "Lip-sync importa. Prefere cortar a desincronizar.",
+        "detail": "Otimizado para cenas com atores falando. Comprime ate 20% e corta texto para manter sincronia labial. Usa diarizacao para detectar diferentes personagens. Timing preciso para que a voz combine com os movimentos da boca.",
+        "presets": {"sync": "smart", "maxstretch": 1.2, "tolerance": 0.05, "diarize": True},
     },
 ]
 

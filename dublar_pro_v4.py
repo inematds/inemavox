@@ -19,7 +19,7 @@ warnings.filterwarnings("ignore")
 # CONFIGURACOES GLOBAIS
 # ============================================================================
 
-VERSION = "4.0.0"
+VERSION = "5.1.0"
 
 # Caracteres por segundo por idioma (para estimativa de duracao)
 CPS_POR_IDIOMA = {
@@ -598,18 +598,30 @@ def transcribe_faster_whisper(wav_path, workdir, src_lang, model_size="medium", 
     from faster_whisper import WhisperModel
     import torch
 
+    # Detectar melhor device: CUDA se CTranslate2 suporta, senao CPU
     device = "cpu"
     compute_type = "int8"
+    if torch.cuda.is_available():
+        try:
+            import ctranslate2
+            cuda_types = ctranslate2.get_supported_compute_types("cuda")
+            if cuda_types:
+                device = "cuda"
+                compute_type = "float16" if "float16" in cuda_types else "int8_float16" if "int8_float16" in cuda_types else "int8"
+        except (ValueError, Exception):
+            # CTranslate2 sem CUDA (aarch64) - manter CPU
+            pass
 
     print(f"[INFO] Whisper modelo: {model_size}")
-    print(f"[INFO] Whisper device: {device.upper()} (CTranslate2)")
+    print(f"[INFO] Whisper device: {device.upper()}" + (" (GPU acelerado)" if device == "cuda" else " (CTranslate2)"))
+    if torch.cuda.is_available():
+        print(f"[INFO] GPU disponivel: {torch.cuda.get_device_name(0)}")
+        if device == "cpu":
+            print(f"[WARN] CTranslate2 sem suporte CUDA nesta plataforma - Whisper rodara em CPU")
     if src_lang:
         print(f"[INFO] Idioma origem: {src_lang}")
     else:
         print(f"[INFO] Idioma origem: AUTO-DETECTAR")
-
-    if torch.cuda.is_available():
-        print(f"[INFO] GPU disponivel: {torch.cuda.get_device_name(0)}")
 
     model = WhisperModel(model_size, device=device, compute_type=compute_type)
 
@@ -690,7 +702,106 @@ def transcribe_faster_whisper(wav_path, workdir, src_lang, model_size="medium", 
 
 
 # ============================================================================
-# ETAPA 3B: TRANSCRICAO (NVIDIA PARAKEET) - ALTERNATIVA
+# ETAPA 3B: TRANSCRICAO (OpenAI Whisper via PyTorch) - FALLBACK GPU
+# ============================================================================
+
+def transcribe_openai_whisper(wav_path, workdir, src_lang, model_size="medium", diarize=False, num_speakers=None):
+    """Transcricao com OpenAI Whisper original (PyTorch, suporta CUDA nativo).
+
+    Usado como fallback quando CTranslate2 nao tem suporte CUDA (ex: ARM64/aarch64).
+    Retorna: (json_path, srt_path, segments, detected_language)
+    """
+    print("\n" + "="*60)
+    print("=== ETAPA 3: Transcricao (OpenAI Whisper - PyTorch GPU) ===")
+    print("="*60)
+
+    import torch
+    # Fix: NVIDIA PyTorch 2.6.0a0 e rejeitado pelo torch.load por ser "alpha < 2.6 final"
+    if "2.6.0a0" in torch.__version__:
+        torch.__version__ = "2.6.0"
+    import whisper
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"[INFO] Whisper modelo: {model_size}")
+    print(f"[INFO] Whisper device: {device.upper()} (PyTorch nativo)")
+    if torch.cuda.is_available():
+        print(f"[INFO] GPU: {torch.cuda.get_device_name(0)}")
+    if src_lang:
+        print(f"[INFO] Idioma origem: {src_lang}")
+    else:
+        print(f"[INFO] Idioma origem: AUTO-DETECTAR")
+
+    model = whisper.load_model(model_size, device=device)
+
+    print("[INFO] Transcrevendo com GPU... (isso deve ser rapido)")
+    result = model.transcribe(
+        str(wav_path),
+        language=src_lang or None,
+        beam_size=5,
+        best_of=1,
+        temperature=0.0,
+        condition_on_previous_text=True,
+        fp16=(device == "cuda"),
+    )
+
+    detected_lang = result.get("language", src_lang)
+    if not src_lang:
+        print(f"[INFO] Idioma detectado: {detected_lang}")
+
+    # Converter segmentos para formato padrao
+    segs = []
+    for s in result.get("segments", []):
+        text = (s.get("text") or "").strip()
+        if text:
+            segs.append({
+                "start": float(s["start"]),
+                "end": float(s["end"]),
+                "text": text,
+            })
+
+    # Merge de segmentos incompletos
+    segs_antes = len(segs)
+    segs = merge_incomplete_segments(segs, max_duration=15.0)
+    segs_depois = len(segs)
+    if segs_antes != segs_depois:
+        print(f"[INFO] Merge de frases incompletas: {segs_antes} -> {segs_depois} segmentos")
+
+    # Diarizacao opcional
+    if diarize:
+        diar_segs = diarize_audio(wav_path, workdir, num_speakers)
+        if diar_segs:
+            segs = merge_transcription_with_diarization(segs, diar_segs)
+
+    # Salvar arquivos
+    srt_path = Path(workdir, "asr.srt")
+    json_path = Path(workdir, "asr.json")
+
+    with open(srt_path, "w", encoding="utf-8") as f:
+        for i, s in enumerate(segs, 1):
+            speaker_tag = f"[{s.get('speaker', 'SPEAKER_00')}] " if 'speaker' in s else ""
+            f.write(f"{i}\n{ts_stamp(s['start'])} --> {ts_stamp(s['end'])}\n{speaker_tag}{s['text']}\n\n")
+
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "language": detected_lang,
+            "language_specified": src_lang,
+            "segments": segs,
+            "info": {
+                "duration": None,
+            }
+        }, f, ensure_ascii=False, indent=2)
+
+    # Liberar memoria GPU
+    del model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    print(f"[OK] Transcrito: {len(segs)} segmentos (GPU PyTorch)")
+    return json_path, srt_path, segs, detected_lang
+
+
+# ============================================================================
+# ETAPA 3C: TRANSCRICAO (NVIDIA PARAKEET) - ALTERNATIVA
 # ============================================================================
 
 def transcribe_parakeet(wav_path, workdir, src_lang=None, model_name="nvidia/parakeet-tdt-1.1b",
@@ -1196,7 +1307,7 @@ def _translate_single_m2m100(text, src, tgt, tok=None, model=None):
         if tok is None or model is None:
             from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
             tok = AutoTokenizer.from_pretrained("facebook/m2m100_418M")
-            model = AutoModelForSeq2SeqLM.from_pretrained("facebook/m2m100_418M")
+            model = AutoModelForSeq2SeqLM.from_pretrained("facebook/m2m100_418M", use_safetensors=True)
             device = get_device()
             model = model.to(device)
 
@@ -1265,7 +1376,7 @@ def translate_segments_ollama(segs, src, tgt, workdir, model="llama3", cps_origi
                 try:
                     from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
                     m2m_tok = AutoTokenizer.from_pretrained("facebook/m2m100_418M")
-                    m2m_model = AutoModelForSeq2SeqLM.from_pretrained("facebook/m2m100_418M")
+                    m2m_model = AutoModelForSeq2SeqLM.from_pretrained("facebook/m2m100_418M", use_safetensors=True)
                     device = get_device()
                     m2m_model = m2m_model.to(device)
                 except Exception as e:
@@ -1351,7 +1462,7 @@ def translate_segments_m2m100(segs, src, tgt, workdir, use_large_model=False, cp
     print(f"[INFO] Device: {device.upper()}")
 
     tok = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForSeq2SeqLM.from_pretrained(model_name).to(device)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_name, use_safetensors=True).to(device)
 
     src = (src or "en").lower()
     tgt = (tgt or "pt").lower()
@@ -2805,6 +2916,33 @@ Exemplos:
             segment_pause=args.segment_pause,
             segment_max_words=args.segment_max_words
         )
+    elif args.asr == "whisper":
+        # Auto-selecionar: usar OpenAI Whisper (PyTorch GPU) se CTranslate2 nao tem CUDA
+        import torch
+        use_openai_whisper = False
+        if torch.cuda.is_available():
+            try:
+                import ctranslate2
+                ctranslate2.get_supported_compute_types("cuda")
+            except (ValueError, Exception):
+                # CTranslate2 sem CUDA - tentar openai-whisper para usar GPU
+                try:
+                    import whisper
+                    use_openai_whisper = True
+                    print("[INFO] CTranslate2 sem CUDA - usando OpenAI Whisper com PyTorch GPU")
+                except ImportError:
+                    print("[WARN] openai-whisper nao instalado - Whisper rodara em CPU via CTranslate2")
+
+        if use_openai_whisper:
+            asr_json, asr_srt, segs, detected_lang = transcribe_openai_whisper(
+                audio_src, workdir, args.src, args.whisper_model,
+                diarize=args.diarize, num_speakers=args.num_speakers
+            )
+        else:
+            asr_json, asr_srt, segs, detected_lang = transcribe_faster_whisper(
+                audio_src, workdir, args.src, args.whisper_model,
+                diarize=args.diarize, num_speakers=args.num_speakers
+            )
     else:
         asr_json, asr_srt, segs, detected_lang = transcribe_faster_whisper(
             audio_src, workdir, args.src, args.whisper_model,

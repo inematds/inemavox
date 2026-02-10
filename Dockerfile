@@ -34,12 +34,16 @@ RUN pip install --no-cache-dir --no-deps \
     faster-whisper ctranslate2 tokenizers huggingface-hub
 
 # Dependencias de faster-whisper/ctranslate2 que nao puxam torch
-RUN pip install --no-cache-dir av pyyaml
+RUN pip install --no-cache-dir av pyyaml onnxruntime
 
 RUN pip install --no-cache-dir --no-deps \
     bark encodec funcy
 
 RUN pip install --no-cache-dir --no-deps transformers safetensors accelerate
+
+# OpenAI Whisper (usa PyTorch CUDA diretamente - fallback para ARM64 onde CTranslate2 nao tem CUDA)
+RUN pip install --no-cache-dir --no-deps openai-whisper
+RUN pip install --no-cache-dir tiktoken more-itertools
 
 # Verificar que PyTorch NVIDIA sobreviveu (CUDA check nao funciona no build, so em runtime)
 RUN python -c "\
