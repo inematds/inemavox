@@ -11,7 +11,7 @@ type Options = {
   asr_engines: { id: string; name: string; description: string; detail?: string; needs_gpu: boolean; supports_languages: string | string[] }[];
   edge_voices: Record<string, { id: string; name: string; gender: string }[]>;
   bark_voices: Record<string, { id: string; name: string }[]>;
-  content_types: { id: string; name: string; description: string; detail?: string; presets: Record<string, unknown> }[];
+  content_types: { id: string; name: string; description: string; detail?: string; presets: Record<string, string | number | boolean | undefined> }[];
   languages: { code: string; name: string }[];
   ollama_models: { id: string; name: string; size_gb: number }[];
 };

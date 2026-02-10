@@ -106,6 +106,9 @@ export default function JobsPage() {
                     }`}>
                       {String(job.device || "cpu") === "cuda" ? "GPU" : "CPU"}
                     </span>
+                    <span className="text-xs text-gray-600">
+                      {job.created_at ? new Date(Number(job.created_at) * 1000).toLocaleString("pt-BR") : ""}
+                    </span>
                   </div>
                   <div className="text-sm text-gray-500">
                     {String(config.src_lang || "auto")} &rarr; {String(config.tgt_lang || "pt")}

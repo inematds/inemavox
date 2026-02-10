@@ -234,6 +234,8 @@ class JobManager:
             try:
                 config = json.loads(config_path.read_text())
                 job = Job(job_id, config)
+                # Restaurar created_at real (mtime do config.json = momento da criacao)
+                job.created_at = config_path.stat().st_mtime
                 # Restaurar stage_times se existir
                 times_path = job_dir / "stage_times.json"
                 if times_path.exists():
@@ -247,6 +249,18 @@ class JobManager:
                 # que _calc_progress recalcule e sobrescreva stage_times
                 if checkpoint.get("last_step_num"):
                     job._last_stage_num = checkpoint["last_step_num"]
+
+                # Restaurar started_at e finished_at a partir dos arquivos
+                log_path = job_dir / "output.log"
+                if log_path.exists():
+                    log_stat = log_path.stat()
+                    # output.log e criado quando o job inicia
+                    job.started_at = log_stat.st_mtime  # aprox (sera sobrescrito se tiver dado melhor)
+                    # Se stage_times existir, calcular duracao real
+                    if job.stage_times:
+                        total_dur = sum(job.stage_times.values())
+                        job.started_at = job.created_at  # aprox
+                        job.finished_at = job.created_at + total_dur
 
                 dublado_dir = job_dir / "dublado"
                 has_output = dublado_dir.exists() and any(dublado_dir.glob("*.mp4"))

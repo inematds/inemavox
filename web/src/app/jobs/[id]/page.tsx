@@ -128,9 +128,8 @@ export default function JobDetail() {
             </span>
           </div>
           <p className="text-gray-500 text-sm">
-            {String(config.src_lang || "auto")} → {String(config.tgt_lang || "pt")}
-            <span className="mx-2">|</span>TTS: {String(config.tts_engine || "edge")}
-            <span className="mx-2">|</span>{String(config.translation_engine || "m2m100")}
+            {job?.created_at ? new Date(Number(job.created_at) * 1000).toLocaleString("pt-BR") : "-"}
+            <span className="mx-2">|</span>{String(config.src_lang || "auto")} → {String(config.tgt_lang || "pt")}
             <span className="mx-2">|</span>{String(config.content_type || "palestra")}
           </p>
         </div>
