@@ -141,11 +141,14 @@ def extract_audio(source: Path, workdir: Path) -> Path:
 
 
 def _has_cuda() -> bool:
+    """Verifica se CUDA esta disponivel tanto no PyTorch quanto no CTranslate2."""
     try:
-        import torch
-        return torch.cuda.is_available()
+        import ctranslate2
+        if ctranslate2.get_cuda_device_count() > 0:
+            return True
     except Exception:
-        return False
+        pass
+    return False
 
 
 def transcribe_for_viral(audio_path: Path, model: str = "large-v3") -> list[dict]:
