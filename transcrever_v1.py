@@ -155,25 +155,28 @@ def main():
     outdir.mkdir(parents=True, exist_ok=True)
 
     try:
+        # Checkpoint escrito APOS cada etapa (semantica: "etapa N concluida")
+        # Assim o progresso mostra a etapa N como done e N+1 como running
+
         # Etapa 1: Download
-        write_checkpoint(workdir, 1, "download", "Download")
         source = download_input(args.input, workdir)
+        write_checkpoint(workdir, 1, "download", "Download")
 
         # Etapa 2: Extraction
-        write_checkpoint(workdir, 2, "extraction", "Extracao de audio")
         audio = extract_audio(source, workdir)
+        write_checkpoint(workdir, 2, "extraction", "Extracao de audio")
 
         # Etapa 3: Transcription
-        write_checkpoint(workdir, 3, "transcription", "Transcricao")
         if args.asr == "whisper":
             segments = transcribe_whisper(audio, args.whisper_model, args.src)
         else:
             # parakeet - fallback para whisper por enquanto
             segments = transcribe_whisper(audio, "large-v3", "en")
+        write_checkpoint(workdir, 3, "transcription", "Transcricao")
 
         # Etapa 4: Export
-        write_checkpoint(workdir, 4, "export", "Exportando legendas")
         export_transcription(segments, outdir)
+        write_checkpoint(workdir, 4, "export", "Exportando legendas")
 
         print("[done] Transcricao concluida com sucesso!", flush=True)
         sys.exit(0)

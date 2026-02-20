@@ -281,40 +281,41 @@ def main():
     clips_dir.mkdir(parents=True, exist_ok=True)
 
     try:
+        # Checkpoint escrito APOS cada etapa (semantica: "etapa N concluida")
+        # Assim o progresso mostra a etapa N como done e N+1 como running
+
         if args.mode == "manual":
             # Etapa 1: Download
-            write_checkpoint(workdir, 1, "download", "Download")
             source = download_input(args.input, workdir)
+            write_checkpoint(workdir, 1, "download", "Download")
 
             # Etapa 2: Cutting
-            write_checkpoint(workdir, 2, "cutting", "Cortando clips")
             timestamps = parse_timestamps(args.timestamps)
             if not timestamps:
                 raise ValueError("Nenhum timestamp valido fornecido. Use o formato: 00:30-02:15,05:00-07:30")
             cut_clips(source, timestamps, clips_dir)
+            write_checkpoint(workdir, 2, "cutting", "Cortando clips")
 
             # Etapa 3: ZIP
-            write_checkpoint(workdir, 3, "zip", "Criando ZIP")
             create_zip(clips_dir)
+            write_checkpoint(workdir, 3, "zip", "Criando ZIP")
 
         else:  # viral
             # Etapa 1: Download
-            write_checkpoint(workdir, 1, "download", "Download")
             source = download_input(args.input, workdir)
+            write_checkpoint(workdir, 1, "download", "Download")
 
             # Etapa 2: Extraction
-            write_checkpoint(workdir, 2, "extraction", "Extracao de audio")
             audio = extract_audio(source, workdir)
+            write_checkpoint(workdir, 2, "extraction", "Extracao de audio")
 
             # Etapa 3: Transcription
-            write_checkpoint(workdir, 3, "transcription", "Transcricao")
             segments = transcribe_for_viral(audio, args.whisper_model)
-
             if not segments:
                 raise RuntimeError("Nenhum segmento de fala detectado no audio")
+            write_checkpoint(workdir, 3, "transcription", "Transcricao")
 
             # Etapa 4: Analysis
-            write_checkpoint(workdir, 4, "analysis", "Analise viral")
             viral_clips = analyze_viral(
                 segments,
                 args.ollama_model,
@@ -323,7 +324,6 @@ def main():
                 args.max_duration,
                 args.ollama_url,
             )
-
             print(f"[analysis] {len(viral_clips)} clips identificados:", flush=True)
             timestamps = []
             for c in viral_clips:
@@ -333,17 +333,17 @@ def main():
                 print(f"  {start:.1f}s - {end:.1f}s: {reason}", flush=True)
                 if end > start:
                     timestamps.append((start, end))
-
             if not timestamps:
                 raise RuntimeError("Nenhum clip valido retornado pelo LLM")
+            write_checkpoint(workdir, 4, "analysis", "Analise viral")
 
             # Etapa 5: Cutting
-            write_checkpoint(workdir, 5, "cutting", "Cortando clips")
             cut_clips(source, timestamps, clips_dir)
+            write_checkpoint(workdir, 5, "cutting", "Cortando clips")
 
             # Etapa 6: ZIP
-            write_checkpoint(workdir, 6, "zip", "Criando ZIP")
             create_zip(clips_dir)
+            write_checkpoint(workdir, 6, "zip", "Criando ZIP")
 
         print("[done] Corte concluido com sucesso!", flush=True)
         sys.exit(0)
