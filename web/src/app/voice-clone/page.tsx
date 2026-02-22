@@ -16,8 +16,137 @@ const LANGS = [
   { code: "ru", label: "Русский" },
 ];
 
+type QualityLevel = "analisando" | "insuficiente" | "fraca" | "boa" | "excelente";
+
+type RefAnalysis = {
+  level: QualityLevel;
+  duration: number;
+  bitrate_kbps: number;
+  label: string;
+  score: number; // 0-100
+  hints: string[];
+};
+
+const QUALITY_META: Record<QualityLevel, { color: string; bar: string; icon: string }> = {
+  analisando: { color: "text-gray-400", bar: "bg-gray-500", icon: "⏳" },
+  insuficiente: { color: "text-red-400", bar: "bg-red-500", icon: "✗" },
+  fraca:        { color: "text-orange-400", bar: "bg-orange-500", icon: "!" },
+  boa:          { color: "text-yellow-400", bar: "bg-yellow-400", icon: "✓" },
+  excelente:    { color: "text-green-400", bar: "bg-green-500", icon: "✓✓" },
+};
+
+async function analyzeRef(file: File): Promise<RefAnalysis> {
+  // Medir duração via HTMLAudioElement
+  const duration = await new Promise<number>((resolve) => {
+    const url = URL.createObjectURL(file);
+    const audio = new Audio();
+    audio.preload = "metadata";
+    audio.onloadedmetadata = () => { URL.revokeObjectURL(url); resolve(audio.duration); };
+    audio.onerror = () => { URL.revokeObjectURL(url); resolve(-1); };
+    audio.src = url;
+  });
+
+  const bitrate_kbps = duration > 0 ? Math.round((file.size * 8) / duration / 1000) : 0;
+
+  const hints: string[] = [];
+  let score = 0;
+  let level: QualityLevel;
+
+  if (duration < 0) {
+    // Não conseguiu ler — formato pode ser problemático mas deixar tentar
+    level = "fraca";
+    score = 30;
+    hints.push("Não foi possível medir a duração — o modelo vai tentar assim mesmo.");
+  } else if (duration < 3) {
+    level = "insuficiente";
+    score = 10;
+    hints.push(`Áudio muito curto (${duration.toFixed(1)}s). Mínimo recomendado: 5s.`);
+    hints.push("Clones com < 3s costumam sair com voz completamente diferente.");
+  } else if (duration < 8) {
+    level = "fraca";
+    score = 40;
+    hints.push(`Duração marginal (${duration.toFixed(1)}s). Ideal: acima de 10s.`);
+    hints.push("O clone pode capturar a voz, mas com menos naturalidade.");
+  } else if (duration < 30) {
+    level = "boa";
+    score = 75;
+    hints.push(`Duração boa (${duration.toFixed(1)}s).`);
+    if (duration < 15) hints.push("Para ainda mais fidelidade, use 15-30s de referência.");
+  } else {
+    level = "excelente";
+    score = 95;
+    hints.push(`Duração excelente (${duration.toFixed(1)}s).`);
+  }
+
+  // Penalizar bitrate muito baixo (possível áudio comprimido demais)
+  if (bitrate_kbps > 0 && bitrate_kbps < 48 && level !== "insuficiente") {
+    score = Math.max(score - 20, 15);
+    hints.push(`Bitrate estimado baixo (~${bitrate_kbps}kbps) — qualidade de áudio pode ser ruim.`);
+    if (level === "excelente") level = "boa";
+    else if (level === "boa") level = "fraca";
+  }
+
+  // Bônus para WAV (lossless)
+  if (file.name.toLowerCase().endsWith(".wav")) {
+    hints.push("Formato WAV — qualidade máxima para o modelo.");
+  }
+
+  // Aviso se duração muito longa (> 60s desnecessário)
+  if (duration > 60) {
+    hints.push("Áudio longo: o modelo usa só os primeiros ~30s de referência.");
+  }
+
+  return { level, duration, bitrate_kbps, score, label: level.charAt(0).toUpperCase() + level.slice(1), hints };
+}
+
+function RefQualityBadge({ analysis }: { analysis: RefAnalysis | null }) {
+  if (!analysis) return null;
+  const meta = QUALITY_META[analysis.level];
+
+  return (
+    <div className={`mt-3 rounded-lg p-3 border ${
+      analysis.level === "insuficiente" ? "border-red-500/40 bg-red-500/5" :
+      analysis.level === "fraca"        ? "border-orange-500/40 bg-orange-500/5" :
+      analysis.level === "boa"          ? "border-yellow-400/40 bg-yellow-400/5" :
+      analysis.level === "excelente"    ? "border-green-500/40 bg-green-500/5" :
+                                          "border-gray-700 bg-gray-800/50"
+    }`}>
+      {/* Header */}
+      <div className="flex items-center justify-between mb-2">
+        <div className={`flex items-center gap-2 text-sm font-semibold ${meta.color}`}>
+          <span>{meta.icon}</span>
+          <span>Qualidade da Referência: {analysis.label}</span>
+        </div>
+        <div className="flex items-center gap-3 text-xs text-gray-500">
+          {analysis.duration > 0 && <span>{analysis.duration.toFixed(1)}s</span>}
+          {analysis.bitrate_kbps > 0 && <span>~{analysis.bitrate_kbps}kbps</span>}
+        </div>
+      </div>
+
+      {/* Barra de score */}
+      <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden mb-2">
+        <div
+          className={`h-full rounded-full transition-all duration-500 ${meta.bar}`}
+          style={{ width: `${analysis.score}%` }}
+        />
+      </div>
+
+      {/* Hints */}
+      <ul className="space-y-0.5">
+        {analysis.hints.map((h, i) => (
+          <li key={i} className="text-xs text-gray-400 flex gap-1.5">
+            <span className="text-gray-600 mt-0.5">›</span>
+            <span>{h}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export default function VoiceClonePage() {
   const [refFile, setRefFile] = useState<File | null>(null);
+  const [refAnalysis, setRefAnalysis] = useState<RefAnalysis | null>(null);
   const [text, setText] = useState("");
   const [lang, setLang] = useState("pt");
   const [status, setStatus] = useState<"idle" | "uploading" | "loading" | "done" | "error">("idle");
@@ -30,6 +159,16 @@ export default function VoiceClonePage() {
   useEffect(() => {
     return () => { wsRef.current?.close(); };
   }, []);
+
+  async function handleRefChange(file: File | null) {
+    setRefFile(file);
+    setRefAnalysis(null);
+    if (!file) return;
+    // Mostrar "analisando" enquanto processa
+    setRefAnalysis({ level: "analisando", duration: 0, bitrate_kbps: 0, score: 0, label: "Analisando...", hints: [] });
+    const analysis = await analyzeRef(file);
+    setRefAnalysis(analysis);
+  }
 
   async function runClone() {
     if (!refFile || !text.trim()) return;
@@ -80,6 +219,7 @@ export default function VoiceClonePage() {
   }
 
   const busy = status === "uploading" || status === "loading";
+  const refInsuficiente = refAnalysis?.level === "insuficiente";
 
   return (
     <div className="max-w-2xl mx-auto">
@@ -91,9 +231,17 @@ export default function VoiceClonePage() {
         <div className="border border-gray-800 rounded-lg p-5">
           <label className="block text-sm text-gray-400 mb-3">
             Audio de Referencia
-            <span className="ml-2 text-gray-600 text-xs">WAV, MP3, MP4 — minimo 5s recomendado</span>
+            <span className="ml-2 text-gray-600 text-xs">WAV, MP3, MP4 — mínimo 5s, ideal 10-30s</span>
           </label>
-          <label className="flex flex-col items-center justify-center border-2 border-dashed border-gray-700 rounded-lg p-8 cursor-pointer hover:border-pink-500/50 transition-colors">
+          <label className={`flex flex-col items-center justify-center border-2 border-dashed rounded-lg p-8 cursor-pointer transition-colors ${
+            refInsuficiente
+              ? "border-red-500/50 hover:border-red-500/70"
+              : refAnalysis?.level === "excelente"
+              ? "border-green-500/50 hover:border-green-500/70"
+              : refAnalysis?.level === "boa"
+              ? "border-yellow-400/50 hover:border-yellow-400/70"
+              : "border-gray-700 hover:border-pink-500/50"
+          }`}>
             {refFile ? (
               <div className="text-center">
                 <div className="text-pink-400 font-medium">{refFile.name}</div>
@@ -109,9 +257,12 @@ export default function VoiceClonePage() {
               type="file"
               accept="audio/*,video/*"
               className="hidden"
-              onChange={(e) => setRefFile(e.target.files?.[0] || null)}
+              onChange={(e) => handleRefChange(e.target.files?.[0] || null)}
             />
           </label>
+
+          {/* Badge de qualidade */}
+          <RefQualityBadge analysis={refAnalysis} />
         </div>
 
         {/* Texto */}
@@ -156,10 +307,10 @@ export default function VoiceClonePage() {
 
         <button
           type="submit"
-          disabled={!refFile || !text.trim() || busy}
+          disabled={!refFile || !text.trim() || busy || refInsuficiente}
           className="w-full py-3 rounded-lg font-semibold transition-colors bg-pink-600 hover:bg-pink-500 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {busy ? progress : "Clonar Voz e Gerar Audio"}
+          {busy ? progress : refInsuficiente ? "Referência insuficiente — troque o áudio" : "Clonar Voz e Gerar Audio"}
         </button>
       </form>
 
