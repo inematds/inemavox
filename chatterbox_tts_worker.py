@@ -102,12 +102,21 @@ def main():
         t0 = time.time()
         try:
             if use_multilingual:
-                kwargs = {"language_id": lang}
+                kwargs = {
+                    "language_id": lang,
+                    "exaggeration": 0.35,   # menor = menos loop/EOS prematuro
+                    "cfg_weight": 0.4,       # menor = mais natural, menos artefato
+                    "temperature": 0.75,     # ligeiramente abaixo do padrão
+                }
                 if ref:
                     kwargs["audio_prompt_path"] = ref
                 wav = model.generate(txt, **kwargs)
             else:
-                kwargs = {}
+                kwargs = {
+                    "exaggeration": 0.35,
+                    "cfg_weight": 0.4,
+                    "temperature": 0.75,
+                }
                 if ref:
                     kwargs["audio_prompt_path"] = ref
                 wav = model.generate(txt, **kwargs)

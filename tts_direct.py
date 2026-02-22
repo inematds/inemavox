@@ -59,23 +59,25 @@ async def run_edge(text: str, lang: str, voice: str | None, outdir: Path) -> Pat
 
 
 def convert_ref_to_wav(ref_path: str, outdir: Path) -> str:
-    """Converte áudio de referência para WAV 22050Hz mono via ffmpeg.
-    Necessário porque soundfile não lê MP4/MP3 diretamente.
+    """Converte áudio de referência para WAV 24000Hz mono, max 10s.
+
+    - 24000 Hz = S3GEN_SR do Chatterbox MTL (evita mel/token mismatch)
+    - Trim para 10s = DEC_COND_LEN do modelo (evita padding inconsistente)
+    - soundfile não lê MP4/MP3 diretamente, por isso sempre convertemos
     """
-    p = Path(ref_path)
-    if p.suffix.lower() == ".wav":
-        return ref_path  # já é WAV, usar direto
     wav_path = outdir / "ref_converted.wav"
     try:
         result = subprocess.run(
             ["ffmpeg", "-y", "-i", ref_path,
-             "-ar", "22050", "-ac", "1", "-f", "wav", str(wav_path)],
+             "-ar", "24000", "-ac", "1",
+             "-t", "10",          # clip para 10s (DEC_COND_LEN do MTL)
+             "-f", "wav", str(wav_path)],
             capture_output=True, text=True, timeout=60,
         )
         if result.returncode == 0 and wav_path.exists():
-            print(f"[tts_direct] Referencia convertida para WAV: {wav_path}", flush=True)
+            print(f"[tts_direct] Referencia convertida: 24kHz mono, max 10s -> {wav_path}", flush=True)
             return str(wav_path)
-        print(f"[tts_direct] ffmpeg falhou na conversao: {result.stderr[-200:]}", flush=True)
+        print(f"[tts_direct] ffmpeg falhou: {result.stderr[-300:]}", flush=True)
     except Exception as e:
         print(f"[tts_direct] Erro ao converter referencia: {e}", flush=True)
     return ref_path  # fallback: tentar com original
