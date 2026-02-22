@@ -31,9 +31,9 @@ export default function VoiceClonePage() {
     return () => { wsRef.current?.close(); };
   }, []);
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function runClone() {
     if (!refFile || !text.trim()) return;
+    wsRef.current?.close();
     setStatus("uploading");
     setError("");
     setJobId(null);
@@ -72,6 +72,11 @@ export default function VoiceClonePage() {
       setStatus("error");
       setError(err instanceof Error ? err.message : "Erro desconhecido");
     }
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    runClone();
   }
 
   const busy = status === "uploading" || status === "loading";
@@ -160,15 +165,39 @@ export default function VoiceClonePage() {
 
       {/* Resultado */}
       {status === "done" && jobId && (
-        <div className="mt-6 border border-green-500/30 bg-green-500/5 rounded-lg p-6 text-center">
-          <div className="text-green-400 font-semibold mb-4">Voz clonada com sucesso!</div>
-          <a
-            href={getAudioUrl(jobId)}
-            download
-            className="inline-block px-6 py-3 bg-green-600 hover:bg-green-500 rounded-lg font-semibold transition-colors"
+        <div className="mt-6 border border-green-500/30 bg-green-500/5 rounded-lg p-6">
+          <div className="text-green-400 font-semibold mb-4 text-center">Voz clonada com sucesso!</div>
+          <audio controls className="w-full mb-4" src={getAudioUrl(jobId)} />
+          <div className="flex gap-3 justify-center">
+            <a
+              href={getAudioUrl(jobId)}
+              download
+              className="px-5 py-2.5 bg-green-600 hover:bg-green-500 rounded-lg font-semibold transition-colors text-sm"
+            >
+              ⬇ Baixar Audio
+            </a>
+            <button
+              type="button"
+              onClick={runClone}
+              disabled={!refFile}
+              className="px-5 py-2.5 bg-pink-600 hover:bg-pink-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg font-semibold transition-colors text-sm"
+            >
+              ↺ Repetir Clone
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Erro com botão de repetir */}
+      {status === "error" && refFile && (
+        <div className="mt-4 flex justify-center">
+          <button
+            type="button"
+            onClick={runClone}
+            className="px-5 py-2.5 bg-pink-600 hover:bg-pink-500 rounded-lg font-semibold transition-colors text-sm"
           >
-            ⬇ Baixar Audio
-          </a>
+            ↺ Tentar Novamente
+          </button>
         </div>
       )}
     </div>
