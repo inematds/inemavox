@@ -167,6 +167,17 @@ export default function JobsPage() {
               infoText = `Modo: ${config.mode || "manual"}`;
             } else if (jobType === "transcription") {
               infoText = `ASR: ${config.asr_engine || "whisper"}${config.src_lang ? ` | ${config.src_lang}` : ""}`;
+            } else if (jobType === "download") {
+              let domain = "";
+              try { domain = new URL(String(config.url || "")).hostname.replace("www.", ""); } catch { /* ignore */ }
+              const qual = String(config.quality || "best");
+              infoText = domain + (qual !== "best" ? ` | ${qual}` : "");
+            } else if (jobType === "tts_generate") {
+              const t = String(config.text || "");
+              infoText = `${config.engine || "edge"} | ${config.lang || "pt"} | ${t.length > 50 ? t.substring(0, 50) + "…" : t}`;
+            } else if (jobType === "voice_clone") {
+              const t = String(config.text || "");
+              infoText = `${config.lang || "pt"} | ${t.length > 60 ? t.substring(0, 60) + "…" : t}`;
             }
 
             return (
@@ -218,12 +229,22 @@ export default function JobsPage() {
                   )}
 
                   {job.status === "completed" && (
-                    <div className="text-sm text-gray-500">
-                      Duração: {String(job.duration_s || 0)}s
-                      {String(config.input || "").length > 0 && (
-                        <span className="ml-3 truncate">
-                          {String(config.input).substring(0, 80)}
-                        </span>
+                    <div className="text-sm text-gray-500 flex items-center gap-2 flex-wrap">
+                      <span>Duração: {String(job.duration_s || 0)}s</span>
+                      {jobType === "dubbing" && String(config.input || "").length > 0 && (
+                        <span className="truncate max-w-xs">{String(config.input).substring(0, 80)}</span>
+                      )}
+                      {jobType === "download" && (
+                        <span className="truncate max-w-xs text-green-500/70">{String(config.url || "").substring(0, 80)}</span>
+                      )}
+                      {jobType === "cutting" && String(config.input || "").length > 0 && (
+                        <span className="truncate max-w-xs">{String(config.input).substring(0, 80)}</span>
+                      )}
+                      {jobType === "transcription" && String(config.input || "").length > 0 && (
+                        <span className="truncate max-w-xs">{String(config.input).substring(0, 80)}</span>
+                      )}
+                      {(jobType === "tts_generate" || jobType === "voice_clone") && (
+                        <span className="truncate max-w-sm italic text-gray-600">"{String(config.text || "").substring(0, 80)}"</span>
                       )}
                     </div>
                   )}

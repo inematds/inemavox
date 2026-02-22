@@ -85,13 +85,30 @@ def _detect_device() -> str:
         return "cpu"
 
 
+def _detect_chatterbox_device() -> str:
+    """Detecta se o ambiente Chatterbox tem GPU CUDA disponivel."""
+    chatterbox_python = os.environ.get(
+        "CHATTERBOX_PYTHON",
+        "/home/nmaldaner/miniconda3/envs/chatterbox/bin/python3",
+    )
+    try:
+        result = subprocess.run(
+            [chatterbox_python, "-c", "import torch; print('cuda' if torch.cuda.is_available() else 'cpu')"],
+            capture_output=True, text=True, timeout=15,
+        )
+        return result.stdout.strip() if result.returncode == 0 else "cpu"
+    except Exception:
+        return "cpu"
+
+
 # Detectar capacidades ao iniciar
 DOCKER_GPU_AVAILABLE = _detect_docker_gpu()
 DEVICE = _detect_device()
+CHATTERBOX_DEVICE = _detect_chatterbox_device()
 
 # Log de inicializacao
 _mode = "Docker GPU" if DOCKER_GPU_AVAILABLE else f"Local ({DEVICE})"
-print(f"[JobManager] Modo: {_mode} | Device: {DEVICE} | Image: {DOCKER_GPU_IMAGE}")
+print(f"[JobManager] Modo: {_mode} | Device: {DEVICE} | Chatterbox: {CHATTERBOX_DEVICE} | Image: {DOCKER_GPU_IMAGE}")
 
 
 class Job:
@@ -447,6 +464,12 @@ class JobManager:
                 job = Job(job_id, config)
                 job_type = config.get("job_type", "dubbing")
 
+                # Aplicar device correto para jobs de Chatterbox
+                if config.get("engine") == "chatterbox" or (
+                    job_type == "dubbing" and config.get("tts_engine") == "chatterbox"
+                ):
+                    job.device = CHATTERBOX_DEVICE
+
                 # Restaurar created_at real (mtime do config.json = momento da criacao)
                 job.created_at = config_path.stat().st_mtime
                 # Restaurar stage_times se existir
@@ -525,6 +548,12 @@ class JobManager:
         job_id = str(uuid.uuid4())[:8]
         job = Job(job_id, config)
         job_type = config.get("job_type", "dubbing")
+
+        # Jobs de Chatterbox rodam no env conda com CUDA
+        if config.get("engine") == "chatterbox" or (
+            job_type == "dubbing" and config.get("tts_engine") == "chatterbox"
+        ):
+            job.device = CHATTERBOX_DEVICE
 
         job.workdir.mkdir(parents=True, exist_ok=True)
         (job.workdir / "dub_work").mkdir(exist_ok=True)
