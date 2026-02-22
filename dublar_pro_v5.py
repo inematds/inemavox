@@ -1890,6 +1890,98 @@ def tts_xtts_clone(segments, workdir, tgt_lang, voice_sample):
         return None, None, None
 
 # ============================================================================
+# ETAPA 6: TTS (CHATTERBOX - Voice Clone Neural)
+# ============================================================================
+
+def tts_chatterbox(segments, workdir, tgt_lang, voice_sample=None):
+    """TTS com Chatterbox — voice clone zero-shot via subprocess.
+
+    Roteamento automatico:
+      - tgt_lang == 'en'  -> Turbo 350M (rapido)
+      - tgt_lang != 'en'  -> Multilingual 500M (PT, ES, FR, DE...)
+
+    Requer conda env 'chatterbox' ou variavel CHATTERBOX_PYTHON.
+    """
+    print("\n" + "="*60)
+    print("=== ETAPA 6: TTS (Chatterbox - Voice Clone Neural) ===")
+    print("="*60)
+
+    import tempfile
+
+    chatterbox_python = os.environ.get(
+        "CHATTERBOX_PYTHON",
+        "/home/nmaldaner/miniconda3/envs/chatterbox/bin/python3"
+    )
+    worker_script = Path(__file__).parent / "chatterbox_tts_worker.py"
+
+    if not Path(chatterbox_python).exists():
+        print(f"[ERRO] Python Chatterbox nao encontrado: {chatterbox_python}")
+        print("[DICA] Defina CHATTERBOX_PYTHON=/path/python3 do conda env chatterbox")
+        return None, None, None
+
+    if not worker_script.exists():
+        print(f"[ERRO] Worker nao encontrado: {worker_script}")
+        return None, None, None
+
+    CHATTERBOX_SR = 24000
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json",
+                                     delete=False, encoding="utf-8") as f:
+        json.dump(segments, f, ensure_ascii=False)
+        segs_json_path = f.name
+
+    output_json_path = Path(workdir) / "chatterbox_result.json"
+
+    try:
+        cmd = [
+            chatterbox_python, str(worker_script),
+            "--segments-json", segs_json_path,
+            "--workdir", str(workdir),
+            "--lang", tgt_lang,
+            "--output-json", str(output_json_path),
+        ]
+        if voice_sample and Path(voice_sample).exists():
+            cmd += ["--ref", str(voice_sample)]
+            print(f"[INFO] Voice clone ativo: {voice_sample}")
+        else:
+            print("[INFO] Sem referencia de voz — usando voz padrao")
+
+        print(f"[INFO] Iniciando Chatterbox worker (lang={tgt_lang})...")
+        result = subprocess.run(cmd, text=True, timeout=3600)
+
+        if result.returncode != 0:
+            print(f"[ERRO] Chatterbox worker retornou codigo {result.returncode}")
+            return None, None, None
+
+        with open(output_json_path, encoding="utf-8") as f:
+            data = json.load(f)
+
+        seg_files = [Path(s["file"]) for s in data["segments"]]
+        sr = data["sr"]
+        metricas = [
+            {"idx": s["idx"], "target": s["target"],
+             "actual": s["actual"], "ratio": s["ratio"]}
+            for s in data["segments"]
+        ]
+
+        ratios = [m["ratio"] for m in metricas]
+        print(f"\n[STATS] TTS Chatterbox:")
+        print(f"  Segmentos : {len(seg_files)}")
+        print(f"  SR        : {sr} Hz")
+        print(f"  Ratio med : {np.mean(ratios):.2%}")
+
+        return seg_files, sr, metricas
+
+    except subprocess.TimeoutExpired:
+        print("[ERRO] Chatterbox worker timeout (>60min)")
+        return None, None, None
+    except Exception as e:
+        print(f"[ERRO] tts_chatterbox falhou: {e}")
+        return None, None, None
+    finally:
+        Path(segs_json_path).unlink(missing_ok=True)
+
+# ============================================================================
 # ETAPA 6: TTS (EDGE - PADRAO v4)
 # ============================================================================
 
@@ -2888,7 +2980,7 @@ Exemplos:
     ap.add_argument("--large-model", action="store_true", help="Usar M2M100 1.2B")
 
     # TTS
-    ap.add_argument("--tts", choices=["edge", "bark", "piper", "xtts"], default="edge",
+    ap.add_argument("--tts", choices=["edge", "bark", "piper", "xtts", "chatterbox"], default="edge",
                    help="Engine TTS")
     ap.add_argument("--voice", default=None, help="Voz TTS")
     ap.add_argument("--rate", default="+0%", help="Velocidade Edge TTS")
@@ -3133,6 +3225,15 @@ Exemplos:
             history_prompt=voice,
             max_retries=args.max_retries
         )
+    elif args.tts == "chatterbox":
+        seg_files, sr_segs, tts_metrics = tts_chatterbox(
+            segs_trad, workdir, args.tgt, voice_sample
+        )
+        if seg_files is None:
+            print("[INFO] Chatterbox falhou, usando Edge como fallback...")
+            seg_files, sr_segs, tts_metrics = tts_edge(
+                segs_trad, workdir, args.tgt, voice=args.voice, rate=args.rate
+            )
     else:  # piper
         seg_files, sr_segs, tts_metrics = tts_piper(
             segs_trad, workdir, args.tgt, model_path=args.voice
