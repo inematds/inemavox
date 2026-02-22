@@ -7,7 +7,7 @@ import {
   getDownloadUrl, getSubtitlesUrl,
   getClips, getClipUrl, getClipsZipUrl, getTranscriptUrl,
   getTranscriptSummary, getVideoSummary,
-  getDownloadFileUrl,
+  getDownloadFileUrl, getAudioUrl,
   createJobWebSocket,
 } from "@/lib/api";
 
@@ -192,8 +192,10 @@ export default function JobDetail() {
     cutting: { label: "Corte", className: "bg-orange-500/20 text-orange-400 border border-orange-500/30" },
     transcription: { label: "Transcricao", className: "bg-purple-500/20 text-purple-400 border border-purple-500/30" },
     download: { label: "Download", className: "bg-green-500/20 text-green-400 border border-green-500/30" },
+    tts_generate: { label: "Gerar Audio", className: "bg-cyan-500/20 text-cyan-400 border border-cyan-500/30" },
+    voice_clone: { label: "Clonar Voz", className: "bg-pink-500/20 text-pink-400 border border-pink-500/30" },
   };
-  const jtl = jobTypeLabels[jobType] || jobTypeLabels.dubbing;
+  const jtl = jobTypeLabels[jobType] || { label: jobType, className: "bg-gray-500/20 text-gray-400 border border-gray-500/30" };
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -554,6 +556,44 @@ export default function JobDetail() {
               Tempo total: <span className="text-white">{formatTime(Number(job.duration_s))}</span>
               <span className="mx-2">|</span>
               Device: <span className={device === "cuda" ? "text-green-400" : "text-yellow-400"}>{device === "cuda" ? "GPU" : "CPU"}</span>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Results - TTS Generate */}
+      {isCompleted && jobType === "tts_generate" && (
+        <section className="border border-cyan-500/30 bg-cyan-500/5 rounded-lg p-5 mb-6">
+          <h2 className="text-lg font-semibold text-cyan-400 mb-4">Audio Gerado</h2>
+          <audio controls className="w-full mb-4" src={getAudioUrl(jobId)}>
+            Seu navegador nao suporta audio.
+          </audio>
+          <a href={getAudioUrl(jobId)} download
+            className="inline-flex items-center gap-2 bg-cyan-600 hover:bg-cyan-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+            ⬇ Download Audio
+          </a>
+          {!!job?.duration_s && (
+            <div className="mt-4 text-sm text-gray-400">
+              Tempo total: <span className="text-white">{formatTime(Number(job.duration_s))}</span>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Results - Voice Clone */}
+      {isCompleted && jobType === "voice_clone" && (
+        <section className="border border-pink-500/30 bg-pink-500/5 rounded-lg p-5 mb-6">
+          <h2 className="text-lg font-semibold text-pink-400 mb-4">Voz Clonada</h2>
+          <audio controls className="w-full mb-4" src={getAudioUrl(jobId)}>
+            Seu navegador nao suporta audio.
+          </audio>
+          <a href={getAudioUrl(jobId)} download
+            className="inline-flex items-center gap-2 bg-pink-600 hover:bg-pink-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+            ⬇ Download Audio
+          </a>
+          {!!job?.duration_s && (
+            <div className="mt-4 text-sm text-gray-400">
+              Tempo total: <span className="text-white">{formatTime(Number(job.duration_s))}</span>
             </div>
           )}
         </section>

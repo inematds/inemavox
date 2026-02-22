@@ -10,8 +10,11 @@ function JobTypeTag({ jobType }: { jobType: string }) {
     dubbing: { label: "Dublagem", className: "bg-blue-500/20 text-blue-400 border border-blue-500/30" },
     cutting: { label: "Cortar", className: "bg-orange-500/20 text-orange-400 border border-orange-500/30" },
     transcription: { label: "Transcrever", className: "bg-purple-500/20 text-purple-400 border border-purple-500/30" },
+    download: { label: "Download", className: "bg-green-500/20 text-green-400 border border-green-500/30" },
+    tts_generate: { label: "Gerar Audio", className: "bg-cyan-500/20 text-cyan-400 border border-cyan-500/30" },
+    voice_clone: { label: "Clonar Voz", className: "bg-pink-500/20 text-pink-400 border border-pink-500/30" },
   };
-  const tag = tags[jobType] || tags.dubbing;
+  const tag = tags[jobType] || { label: jobType, className: "bg-gray-500/20 text-gray-400 border border-gray-500/30" };
   return (
     <span className={`px-1.5 py-0.5 rounded text-xs font-medium border ${tag.className}`}>
       {tag.label}
@@ -82,6 +85,8 @@ export default function JobsPage() {
     cutting: jobs.filter((j) => String(((j.config || {}) as Record<string, unknown>).job_type || "dubbing") === "cutting").length,
     transcription: jobs.filter((j) => String(((j.config || {}) as Record<string, unknown>).job_type || "dubbing") === "transcription").length,
     download: jobs.filter((j) => String(((j.config || {}) as Record<string, unknown>).job_type || "dubbing") === "download").length,
+    tts_generate: jobs.filter((j) => String(((j.config || {}) as Record<string, unknown>).job_type || "dubbing") === "tts_generate").length,
+    voice_clone: jobs.filter((j) => String(((j.config || {}) as Record<string, unknown>).job_type || "dubbing") === "voice_clone").length,
   };
 
   return (
@@ -97,6 +102,8 @@ export default function JobsPage() {
             { key: "cutting", label: "Corte" },
             { key: "transcription", label: "Transcricao" },
             { key: "download", label: "Download" },
+            { key: "tts_generate", label: "Gerar Audio" },
+            { key: "voice_clone", label: "Clonar Voz" },
           ] as const).map(({ key, label }) => (
             <button
               key={key}
