@@ -58,6 +58,62 @@ async def run_edge(text: str, lang: str, voice: str | None, outdir: Path) -> Pat
     return out_path
 
 
+def convert_ref_to_wav(ref_path: str, outdir: Path) -> str:
+    """Converte áudio de referência para WAV 22050Hz mono via ffmpeg.
+    Necessário porque soundfile não lê MP4/MP3 diretamente.
+    """
+    p = Path(ref_path)
+    if p.suffix.lower() == ".wav":
+        return ref_path  # já é WAV, usar direto
+    wav_path = outdir / "ref_converted.wav"
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", ref_path,
+             "-ar", "22050", "-ac", "1", "-f", "wav", str(wav_path)],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode == 0 and wav_path.exists():
+            print(f"[tts_direct] Referencia convertida para WAV: {wav_path}", flush=True)
+            return str(wav_path)
+        print(f"[tts_direct] ffmpeg falhou na conversao: {result.stderr[-200:]}", flush=True)
+    except Exception as e:
+        print(f"[tts_direct] Erro ao converter referencia: {e}", flush=True)
+    return ref_path  # fallback: tentar com original
+
+
+def split_sentences(text: str, max_chars: int = 120) -> list[str]:
+    """Divide texto longo em sentenças curtas para evitar loop no modelo."""
+    import re
+    # Dividir em sentenças por pontuação
+    parts = re.split(r'(?<=[.!?,;:])\s+', text.strip())
+    sentences: list[str] = []
+    current = ""
+    for part in parts:
+        if len(current) + len(part) + 1 <= max_chars:
+            current = (current + " " + part).strip() if current else part
+        else:
+            if current:
+                sentences.append(current)
+            # Parte muito longa: dividir por vírgulas ou forçar
+            if len(part) > max_chars:
+                words = part.split()
+                chunk = ""
+                for w in words:
+                    if len(chunk) + len(w) + 1 <= max_chars:
+                        chunk = (chunk + " " + w).strip() if chunk else w
+                    else:
+                        if chunk:
+                            sentences.append(chunk)
+                        chunk = w
+                if chunk:
+                    sentences.append(chunk)
+            else:
+                current = part
+    if current:
+        sentences.append(current)
+    return [s for s in sentences if s.strip()]
+
+
 def run_chatterbox(text: str, lang: str, ref: str | None, outdir: Path) -> Path:
     chatterbox_python = os.environ.get(
         "CHATTERBOX_PYTHON",
@@ -71,8 +127,22 @@ def run_chatterbox(text: str, lang: str, ref: str | None, outdir: Path) -> Path:
             "Defina CHATTERBOX_PYTHON=/path/python3 do conda env chatterbox"
         )
 
-    # Montar segmento no formato do worker
-    segments = [{"text_trad": text, "start": 0.0, "end": 10.0}]
+    # Converter referência para WAV se necessário (soundfile não lê MP4/MP3)
+    ref_wav = None
+    if ref and Path(ref).exists():
+        ref_wav = convert_ref_to_wav(ref, outdir)
+        print(f"[tts_direct] Chatterbox voice clone: {ref_wav}", flush=True)
+    else:
+        print(f"[tts_direct] Chatterbox voz padrao (lang={lang})", flush=True)
+
+    # Dividir texto longo em sentenças (max 120 chars) para evitar loop/EOS prematuro
+    sentences = split_sentences(text, max_chars=120)
+    print(f"[tts_direct] Texto dividido em {len(sentences)} segmentos", flush=True)
+
+    segments = [
+        {"text_trad": s, "start": float(i * 15), "end": float((i + 1) * 15)}
+        for i, s in enumerate(sentences)
+    ]
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json",
                                      delete=False, encoding="utf-8") as f:
@@ -89,20 +159,39 @@ def run_chatterbox(text: str, lang: str, ref: str | None, outdir: Path) -> Path:
             "--lang", lang,
             "--output-json", str(output_json),
         ]
-        if ref and Path(ref).exists():
-            cmd += ["--ref", ref]
-            print(f"[tts_direct] Chatterbox voice clone: {ref}", flush=True)
-        else:
-            print(f"[tts_direct] Chatterbox voz padrao (lang={lang})", flush=True)
+        if ref_wav:
+            cmd += ["--ref", ref_wav]
 
         result = subprocess.run(cmd, text=True, timeout=600)
         if result.returncode != 0:
             raise RuntimeError(f"Chatterbox worker retornou codigo {result.returncode}")
 
         data = json.loads(output_json.read_text(encoding="utf-8"))
-        seg_file = Path(data["segments"][0]["file"])
+        sr = data.get("sr", 24000)
+        seg_files = [Path(s["file"]) for s in data["segments"] if Path(s["file"]).exists()]
+
+        if not seg_files:
+            raise RuntimeError("Nenhum segmento de audio gerado")
+
         out_path = outdir / "generated.wav"
-        seg_file.rename(out_path)
+
+        if len(seg_files) == 1:
+            seg_files[0].rename(out_path)
+        else:
+            # Concatenar todos os segmentos em um único WAV
+            import soundfile as sf
+            import numpy as np
+            chunks = []
+            silence = np.zeros(int(sr * 0.25), dtype=np.float32)  # 250ms entre frases
+            for i, seg_file in enumerate(seg_files):
+                audio, _ = sf.read(str(seg_file))
+                chunks.append(audio.astype(np.float32))
+                if i < len(seg_files) - 1:
+                    chunks.append(silence)
+            combined = np.concatenate(chunks)
+            sf.write(str(out_path), combined, sr)
+            print(f"[tts_direct] {len(seg_files)} segmentos concatenados", flush=True)
+
         print(f"[tts_direct] Audio gerado: {out_path} ({out_path.stat().st_size} bytes)", flush=True)
         return out_path
 
