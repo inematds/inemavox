@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { createTtsJob, getAudioUrl, createJobWebSocket, getOptions } from "@/lib/api";
+import { createTtsJob, createTtsJobWithUpload, getAudioUrl, createJobWebSocket, getOptions } from "@/lib/api";
 
 const LANGS = [
   { code: "pt", label: "Português (BR)" },
@@ -22,6 +22,8 @@ export default function TtsPage() {
   const [engine, setEngine] = useState("edge");
   const [voice, setVoice] = useState("");
   const [edgeVoices, setEdgeVoices] = useState<{ id: string; name: string }[]>([]);
+  const [refFile, setRefFile] = useState<File | null>(null);
+  const [uploadPct, setUploadPct] = useState(0);
   const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [jobId, setJobId] = useState<string | null>(null);
   const [progress, setProgress] = useState("");
@@ -49,7 +51,16 @@ export default function TtsPage() {
     setProgress("Criando job...");
 
     try {
-      const job = await createTtsJob({ text, lang, engine, voice: voice || undefined }) as { id: string };
+      let job: { id: string };
+      if (engine === "chatterbox" && refFile) {
+        job = await createTtsJobWithUpload(
+          refFile,
+          { text, lang, engine },
+          (pct) => setUploadPct(pct),
+        ) as { id: string };
+      } else {
+        job = await createTtsJob({ text, lang, engine, voice: voice || undefined }) as { id: string };
+      }
       setJobId(job.id);
       setProgress("Gerando audio...");
 
@@ -133,27 +144,74 @@ export default function TtsPage() {
           </div>
         )}
 
+        {/* Voz Chatterbox: referencia opcional */}
+        {engine === "chatterbox" && (
+          <div className="border border-gray-800 rounded-lg p-5">
+            <label className="block text-sm text-gray-400 mb-1">Audio de referencia (opcional)</label>
+            <p className="text-xs text-gray-600 mb-3">Envie um audio para clonar a voz. Sem arquivo, usa a voz padrao do Chatterbox.</p>
+            <label className={`flex items-center gap-3 border-2 border-dashed rounded-lg px-4 py-3 cursor-pointer transition-colors ${
+              refFile ? "border-purple-500/50 hover:border-purple-500/70" : "border-gray-700 hover:border-purple-500/40"
+            }`}>
+              {refFile ? (
+                <>
+                  <span className="text-purple-400 text-sm font-medium truncate">{refFile.name}</span>
+                  <span className="text-gray-500 text-xs ml-auto shrink-0">{(refFile.size / 1024 / 1024).toFixed(1)} MB</span>
+                  <button type="button" onClick={(ev) => { ev.preventDefault(); setRefFile(null); }}
+                    className="text-gray-500 hover:text-red-400 text-xs ml-1 shrink-0">✕</button>
+                </>
+              ) : (
+                <span className="text-gray-500 text-sm">Clique para selecionar WAV / MP3 / MP4...</span>
+              )}
+              <input type="file" accept="audio/*,video/*,.wav,.mp3,.mp4,.m4a,.ogg,.webm" className="hidden"
+                onChange={(e) => setRefFile(e.target.files?.[0] || null)} />
+            </label>
+            {status === "loading" && refFile && uploadPct < 100 && (
+              <div className="mt-2">
+                <div className="flex justify-between text-xs text-gray-400 mb-1">
+                  <span>Enviando referencia...</span><span>{uploadPct}%</span>
+                </div>
+                <div className="h-1 bg-gray-800 rounded-full overflow-hidden">
+                  <div className="h-full bg-purple-500 transition-all" style={{ width: `${uploadPct}%` }} />
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {error && (
           <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4 text-red-400 text-sm">{error}</div>
         )}
 
-        <button
-          type="submit"
-          disabled={!text.trim() || status === "loading"}
-          className="w-full py-3 rounded-lg font-semibold transition-colors bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {status === "loading" ? `${progress}` : "Gerar Audio"}
-        </button>
+        {status === "done" ? (
+          <button
+            type="button"
+            onClick={() => { setStatus("idle"); setJobId(null); setError(""); setProgress(""); setUploadPct(0); }}
+            className="w-full py-3 rounded-lg font-semibold transition-colors bg-gray-700 hover:bg-gray-600"
+          >
+            + Gerar Novo Audio
+          </button>
+        ) : (
+          <button
+            type="submit"
+            disabled={!text.trim() || status === "loading"}
+            className="w-full py-3 rounded-lg font-semibold transition-colors bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {status === "loading" ? progress : "Gerar Audio"}
+          </button>
+        )}
       </form>
 
       {/* Resultado */}
       {status === "done" && jobId && (
-        <div className="mt-6 border border-green-500/30 bg-green-500/5 rounded-lg p-6 text-center">
-          <div className="text-green-400 font-semibold mb-4">Audio gerado com sucesso!</div>
+        <div className="mt-6 border border-green-500/30 bg-green-500/5 rounded-lg p-5">
+          <div className="text-green-400 font-semibold mb-3">Audio gerado com sucesso!</div>
+          <audio controls className="w-full mb-4" src={getAudioUrl(jobId)}>
+            Seu navegador nao suporta audio.
+          </audio>
           <a
             href={getAudioUrl(jobId)}
             download
-            className="inline-block px-6 py-3 bg-green-600 hover:bg-green-500 rounded-lg font-semibold transition-colors"
+            className="inline-flex items-center gap-2 bg-green-600 hover:bg-green-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
           >
             ⬇ Baixar Audio
           </a>

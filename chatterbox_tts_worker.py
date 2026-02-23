@@ -34,10 +34,24 @@ MTL_LANGS = {
 }
 
 
-def get_device():
-    if torch.cuda.is_available():
+def get_device() -> str:
+    """Detecta device com verificação de VRAM disponível.
+    MTL requer ~3-4GB VRAM. Se insuficiente, fallback para CPU.
+    """
+    if not torch.cuda.is_available():
+        return "cpu"
+    try:
+        free_bytes, total_bytes = torch.cuda.mem_get_info()
+        free_gb = free_bytes / 1e9
+        # MTL precisa de ~3-4GB; VC usa só o decoder (~1.5GB)
+        # Threshold conservador de 2.5GB para ambos os modelos
+        if free_gb < 2.5:
+            print(f"[chatterbox_worker] VRAM insuficiente ({free_gb:.1f}GB livre de {total_bytes/1e9:.1f}GB), usando CPU", flush=True)
+            return "cpu"
+        print(f"[chatterbox_worker] VRAM disponivel: {free_gb:.1f}GB livre", flush=True)
         return "cuda"
-    return "cpu"
+    except Exception:
+        return "cuda"
 
 
 def salvar_silencio(path, duracao_s, sr=CHATTERBOX_SR):
@@ -58,6 +72,9 @@ def main():
     parser.add_argument("--lang", required=True)
     parser.add_argument("--ref", default=None, help="WAV de referencia para voice clone")
     parser.add_argument("--output-json", required=True)
+    parser.add_argument("--cfg-weight",   type=float, default=0.65, help="CFG weight (0.1-1.0). Alto = mais fiel ao ref")
+    parser.add_argument("--exaggeration", type=float, default=0.5,  help="Exaggeration (0.1-1.0). Alto = mais expressivo")
+    parser.add_argument("--temperature",  type=float, default=0.75, help="Temperature (0.1-1.5). Alto = mais variado")
     args = parser.parse_args()
 
     with open(args.segments_json, encoding="utf-8") as f:
@@ -75,14 +92,28 @@ def main():
         print(f"[chatterbox_worker] voice clone: {ref}", flush=True)
 
     t0 = time.time()
-    if use_multilingual:
-        from chatterbox.mtl_tts import ChatterboxMultilingualTTS
-        model = ChatterboxMultilingualTTS.from_pretrained(device=device)
-    else:
-        from chatterbox.tts_turbo import ChatterboxTurboTTS
-        model = ChatterboxTurboTTS.from_pretrained(device=device)
+    try:
+        if use_multilingual:
+            from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+            model = ChatterboxMultilingualTTS.from_pretrained(device=device)
+        else:
+            from chatterbox.tts_turbo import ChatterboxTurboTTS
+            model = ChatterboxTurboTTS.from_pretrained(device=device)
+    except Exception as e:
+        if device == "cuda" and ("out of memory" in str(e).lower() or "cuda" in str(e).lower()):
+            print(f"[chatterbox_worker] CUDA OOM ao carregar modelo, retentando em CPU: {e}", flush=True)
+            torch.cuda.empty_cache()
+            if use_multilingual:
+                from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+                model = ChatterboxMultilingualTTS.from_pretrained(device="cpu")
+            else:
+                from chatterbox.tts_turbo import ChatterboxTurboTTS
+                model = ChatterboxTurboTTS.from_pretrained(device="cpu")
+            device = "cpu"
+        else:
+            raise
 
-    print(f"[chatterbox_worker] modelo carregado em {time.time()-t0:.1f}s", flush=True)
+    print(f"[chatterbox_worker] modelo carregado em {time.time()-t0:.1f}s (device={device})", flush=True)
 
     seg_results = []
 
@@ -104,18 +135,18 @@ def main():
             if use_multilingual:
                 kwargs = {
                     "language_id": lang,
-                    "exaggeration": 0.35,   # menor = menos loop/EOS prematuro
-                    "cfg_weight": 0.4,       # menor = mais natural, menos artefato
-                    "temperature": 0.75,     # ligeiramente abaixo do padrão
+                    "exaggeration": args.exaggeration,
+                    "cfg_weight":   args.cfg_weight,
+                    "temperature":  args.temperature,
                 }
                 if ref:
                     kwargs["audio_prompt_path"] = ref
                 wav = model.generate(txt, **kwargs)
             else:
                 kwargs = {
-                    "exaggeration": 0.35,
-                    "cfg_weight": 0.4,
-                    "temperature": 0.75,
+                    "exaggeration": args.exaggeration,
+                    "cfg_weight":   args.cfg_weight,
+                    "temperature":  args.temperature,
                 }
                 if ref:
                     kwargs["audio_prompt_path"] = ref

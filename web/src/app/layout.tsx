@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "inemaVOX 1.0.0 - Suite de Voz com IA",
+  title: "inemaVOX 1.8.0 - Suite de Voz com IA",
   description: "Suite de voz local com IA: dubla, transcreve, corta e baixa videos com GPU",
 };
 
@@ -13,7 +13,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <nav className="border-b border-gray-800 bg-gray-900/50 backdrop-blur-sm sticky top-0 z-50">
           <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
             <a href="/" className="text-xl font-bold text-white flex items-baseline gap-1">
-              inema<span className="text-blue-400">VOX</span> <span className="text-gray-500 text-sm font-normal">1.0.0</span>
+              inema<span className="text-blue-400">VOX</span> <span className="text-gray-500 text-sm font-normal">1.8.0</span>
             </a>
             <div className="flex gap-5 text-sm">
               <a href="/" className="hover:text-white transition-colors text-gray-400">Dashboard</a>

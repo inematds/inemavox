@@ -139,7 +139,9 @@ class Job:
         job_type = self.config.get("job_type", "dubbing")
         if job_type == "cutting":
             mode = self.config.get("mode", "manual")
-            return STAGES_CUT_VIRAL if mode == "viral" else STAGES_CUT_MANUAL
+            if mode == "viral" and not self.config.get("split_equal"):
+                return STAGES_CUT_VIRAL
+            return STAGES_CUT_MANUAL
         elif job_type == "transcription":
             return STAGES_TRANSCRIPTION
         elif job_type == "download":
@@ -465,9 +467,13 @@ class JobManager:
                 job_type = config.get("job_type", "dubbing")
 
                 # Aplicar device correto para jobs de Chatterbox
-                if config.get("engine") == "chatterbox" or (
+                if config.get("engine") in ("chatterbox", "chatterbox-vc") or (
                     job_type == "dubbing" and config.get("tts_engine") == "chatterbox"
                 ):
+                    job.device = CHATTERBOX_DEVICE
+
+                # Transcricao usa Whisper GPU via conda env quando CUDA disponivel
+                if job_type == "transcription" and CHATTERBOX_DEVICE == "cuda":
                     job.device = CHATTERBOX_DEVICE
 
                 # Restaurar created_at real (mtime do config.json = momento da criacao)
@@ -550,9 +556,13 @@ class JobManager:
         job_type = config.get("job_type", "dubbing")
 
         # Jobs de Chatterbox rodam no env conda com CUDA
-        if config.get("engine") == "chatterbox" or (
+        if config.get("engine") in ("chatterbox", "chatterbox-vc") or (
             job_type == "dubbing" and config.get("tts_engine") == "chatterbox"
         ):
+            job.device = CHATTERBOX_DEVICE
+
+        # Transcricao usa Whisper GPU via conda env quando CUDA disponivel
+        if job_type == "transcription" and CHATTERBOX_DEVICE == "cuda":
             job.device = CHATTERBOX_DEVICE
 
         job.workdir.mkdir(parents=True, exist_ok=True)
@@ -729,25 +739,31 @@ class JobManager:
         if config.get("mode") == "manual" and config.get("timestamps"):
             cmd.extend(["--timestamps", config["timestamps"]])
         elif config.get("mode") == "viral":
-            if config.get("ollama_model"):
-                cmd.extend(["--ollama-model", config["ollama_model"]])
             if config.get("num_clips"):
                 cmd.extend(["--num-clips", str(config["num_clips"])])
-            if config.get("min_duration"):
-                cmd.extend(["--min-duration", str(config["min_duration"])])
-            if config.get("max_duration"):
-                cmd.extend(["--max-duration", str(config["max_duration"])])
-            if config.get("whisper_model"):
-                cmd.extend(["--whisper-model", config["whisper_model"]])
-            # Providers externos
-            if config.get("llm_provider") and config["llm_provider"] != "ollama":
-                cmd.extend(["--llm-provider", config["llm_provider"]])
-            if config.get("llm_model"):
-                cmd.extend(["--llm-model", config["llm_model"]])
-            if config.get("llm_api_key"):
-                cmd.extend(["--llm-api-key", config["llm_api_key"]])
-            if config.get("llm_base_url"):
-                cmd.extend(["--llm-base-url", config["llm_base_url"]])
+            if config.get("split_equal"):
+                cmd.append("--split-equal")
+            else:
+                if config.get("ollama_model"):
+                    cmd.extend(["--ollama-model", config["ollama_model"]])
+                if config.get("min_duration"):
+                    cmd.extend(["--min-duration", str(config["min_duration"])])
+                if config.get("max_duration"):
+                    cmd.extend(["--max-duration", str(config["max_duration"])])
+                if config.get("whisper_model"):
+                    cmd.extend(["--whisper-model", config["whisper_model"]])
+                if config.get("llm_provider") and config["llm_provider"] != "ollama":
+                    cmd.extend(["--llm-provider", config["llm_provider"]])
+                if config.get("llm_model"):
+                    cmd.extend(["--llm-model", config["llm_model"]])
+                if config.get("llm_api_key"):
+                    cmd.extend(["--llm-api-key", config["llm_api_key"]])
+                if config.get("llm_base_url"):
+                    cmd.extend(["--llm-base-url", config["llm_base_url"]])
+                if config.get("system_prompt"):
+                    cmd.extend(["--system-prompt", config["system_prompt"]])
+                if config.get("user_prompt"):
+                    cmd.extend(["--user-prompt", config["user_prompt"]])
 
         return cmd
 
@@ -764,25 +780,31 @@ class JobManager:
         if config.get("mode") == "manual" and config.get("timestamps"):
             cmd.extend(["--timestamps", config["timestamps"]])
         elif config.get("mode") == "viral":
-            if config.get("ollama_model"):
-                cmd.extend(["--ollama-model", config["ollama_model"]])
             if config.get("num_clips"):
                 cmd.extend(["--num-clips", str(config["num_clips"])])
-            if config.get("min_duration"):
-                cmd.extend(["--min-duration", str(config["min_duration"])])
-            if config.get("max_duration"):
-                cmd.extend(["--max-duration", str(config["max_duration"])])
-            if config.get("whisper_model"):
-                cmd.extend(["--whisper-model", config["whisper_model"]])
-            # Providers externos
-            if config.get("llm_provider") and config["llm_provider"] != "ollama":
-                cmd.extend(["--llm-provider", config["llm_provider"]])
-            if config.get("llm_model"):
-                cmd.extend(["--llm-model", config["llm_model"]])
-            if config.get("llm_api_key"):
-                cmd.extend(["--llm-api-key", config["llm_api_key"]])
-            if config.get("llm_base_url"):
-                cmd.extend(["--llm-base-url", config["llm_base_url"]])
+            if config.get("split_equal"):
+                cmd.append("--split-equal")
+            else:
+                if config.get("ollama_model"):
+                    cmd.extend(["--ollama-model", config["ollama_model"]])
+                if config.get("min_duration"):
+                    cmd.extend(["--min-duration", str(config["min_duration"])])
+                if config.get("max_duration"):
+                    cmd.extend(["--max-duration", str(config["max_duration"])])
+                if config.get("whisper_model"):
+                    cmd.extend(["--whisper-model", config["whisper_model"]])
+                if config.get("llm_provider") and config["llm_provider"] != "ollama":
+                    cmd.extend(["--llm-provider", config["llm_provider"]])
+                if config.get("llm_model"):
+                    cmd.extend(["--llm-model", config["llm_model"]])
+                if config.get("llm_api_key"):
+                    cmd.extend(["--llm-api-key", config["llm_api_key"]])
+                if config.get("llm_base_url"):
+                    cmd.extend(["--llm-base-url", config["llm_base_url"]])
+                if config.get("system_prompt"):
+                    cmd.extend(["--system-prompt", config["system_prompt"]])
+                if config.get("user_prompt"):
+                    cmd.extend(["--user-prompt", config["user_prompt"]])
 
         return cmd
 
@@ -872,9 +894,16 @@ class JobManager:
             "--entrypoint", "python",
             DOCKER_GPU_IMAGE,
             "/app/baixar_v1.py",
-            "--url", config["url"],
             "--outdir", "/app/download",
         ]
+
+        if config.get("local_file"):
+            local_abs = str(Path(config["local_file"]).resolve())
+            cmd.insert(-3, "-v")
+            cmd.insert(-3, f"{local_abs}:/app/local_input{Path(config['local_file']).suffix}")
+            cmd.extend(["--local-file", f"/app/local_input{Path(config['local_file']).suffix}"])
+        else:
+            cmd.extend(["--url", config["url"]])
 
         if config.get("quality"):
             cmd.extend(["--quality", config["quality"]])
@@ -882,15 +911,19 @@ class JobManager:
         return cmd
 
     def _build_local_download_command(self, job: Job) -> list:
-        """Monta comando local para download de video."""
+        """Monta comando local para download de video ou processamento de arquivo local."""
         config = job.config
         script_path = str(PROJECT_DIR / "baixar_v1.py")
 
         cmd = [
             PYTHON_BIN, script_path,
-            "--url", config["url"],
             "--outdir", str(job.workdir.resolve() / "download"),
         ]
+
+        if config.get("local_file"):
+            cmd.extend(["--local-file", config["local_file"]])
+        else:
+            cmd.extend(["--url", config["url"]])
 
         if config.get("quality"):
             cmd.extend(["--quality", config["quality"]])
@@ -914,6 +947,12 @@ class JobManager:
             cmd.extend(["--voice", config["voice"]])
         if config.get("ref_audio") and Path(config["ref_audio"]).exists():
             cmd.extend(["--ref", config["ref_audio"]])
+        if config.get("cfg_weight") is not None:
+            cmd.extend(["--cfg-weight", str(config["cfg_weight"])])
+        if config.get("exaggeration") is not None:
+            cmd.extend(["--exaggeration", str(config["exaggeration"])])
+        if config.get("temperature") is not None:
+            cmd.extend(["--temperature", str(config["temperature"])])
 
         return cmd
 

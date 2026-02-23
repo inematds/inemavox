@@ -10,6 +10,26 @@ import time
 import urllib.request
 from pathlib import Path
 
+# Prompts padrão para análise viral
+DEFAULT_SYSTEM_PROMPT = (
+    "You are an expert video editor and social media strategist specializing in "
+    "viral short-form content. Your goal is to identify the most engaging, "
+    "shareable moments from video transcripts."
+)
+
+DEFAULT_USER_PROMPT = (
+    "Analyze this video transcript and identify the {num_clips} most engaging/viral segments.\n\n"
+    "Requirements:\n"
+    "- Each clip must be between {min_dur} and {max_dur} seconds long\n"
+    "- Choose complete thoughts/stories, never cut mid-sentence\n"
+    "- Prioritize: hooks, surprising facts, emotional moments, actionable tips, controversial opinions\n"
+    "- Clips must not overlap\n\n"
+    "Transcript:\n{transcript}\n\n"
+    "Respond ONLY with a valid JSON array (no extra text, no markdown):\n"
+    '[\n  {{"start": 10.5, "end": 75.2, "reason": "Strong hook about..."}},\n'
+    '  {{"start": 120.0, "end": 195.0, "reason": "Viral moment: ..."}}\n]'
+)
+
 # Base URLs para providers OpenAI-compativeis
 PROVIDER_BASE_URLS = {
     "openai":     "https://api.openai.com",
@@ -64,8 +84,10 @@ def download_input(input_val: str, workdir: Path) -> Path:
 
 
 def parse_time_str(s: str) -> float:
-    """Converte 'HH:MM:SS', 'MM:SS' ou 'SS' para segundos float."""
-    parts = s.strip().split(":")
+    """Converte 'HH:MM:SS', 'HH:MM:SS,mmm', 'MM:SS' ou 'SS' para segundos float."""
+    # Substituir vírgula de milissegundos (formato SRT) por ponto
+    s = s.strip().replace(",", ".")
+    parts = s.split(":")
     if len(parts) == 1:
         return float(parts[0])
     elif len(parts) == 2:
@@ -75,23 +97,51 @@ def parse_time_str(s: str) -> float:
 
 
 def parse_timestamps(timestamps_str: str) -> list[tuple[float, float]]:
-    """Parseia 'HH:MM:SS-HH:MM:SS, MM:SS-MM:SS, ...' em lista de (start, end).
-    Separadores aceitos: virgula, ponto-e-virgula, newline."""
+    """Parseia timestamps em lista de (start, end).
+
+    Formatos aceitos:
+      - Padrão:  00:30-02:15, 05:00-07:30
+      - SRT:     00:00:00,080 --> 00:00:24,079
+    Separadores entre pares: vírgula, ponto-e-vírgula ou nova linha.
+    """
     clips = []
-    for part in re.split(r"[,;\r\n]+", timestamps_str):
+    # Dividir em pares de timestamps: usa newline como separador primário para SRT
+    for part in re.split(r"[;\r\n]+", timestamps_str):
         part = part.strip()
         if not part:
             continue
-        match = re.match(r"^([\d:]+)\s*-\s*([\d:]+)$", part)
-        if not match:
-            print(f"[warn] Timestamp invalido ignorado: {part}", flush=True)
+
+        # Formato SRT: "HH:MM:SS,mmm --> HH:MM:SS,mmm"
+        srt_match = re.match(
+            r"^([\d]{1,2}:[\d]{2}:[\d]{2}[,.][\d]+)\s*-->\s*([\d]{1,2}:[\d]{2}:[\d]{2}[,.][\d]+)$",
+            part,
+        )
+        if srt_match:
+            start_s = parse_time_str(srt_match.group(1))
+            end_s = parse_time_str(srt_match.group(2))
+            if end_s > start_s:
+                clips.append((start_s, end_s))
+            else:
+                print(f"[warn] Clip invalido (start >= end): {part}", flush=True)
             continue
-        start_s = parse_time_str(match.group(1))
-        end_s = parse_time_str(match.group(2))
-        if end_s <= start_s:
-            print(f"[warn] Clip invalido (start >= end): {part}", flush=True)
-            continue
-        clips.append((start_s, end_s))
+
+        # Formato padrão: "HH:MM:SS-HH:MM:SS" ou "MM:SS-MM:SS"
+        # Suporta múltiplos pares separados por vírgula na mesma linha
+        for subpart in re.split(r",", part):
+            subpart = subpart.strip()
+            if not subpart:
+                continue
+            match = re.match(r"^([\d:]+)\s*-\s*([\d:]+)$", subpart)
+            if not match:
+                print(f"[warn] Timestamp invalido ignorado: {subpart}", flush=True)
+                continue
+            start_s = parse_time_str(match.group(1))
+            end_s = parse_time_str(match.group(2))
+            if end_s <= start_s:
+                print(f"[warn] Clip invalido (start >= end): {subpart}", flush=True)
+                continue
+            clips.append((start_s, end_s))
+
     return clips
 
 
@@ -205,27 +255,28 @@ def transcribe_for_viral(audio_path: Path, model: str = "large-v3") -> list[dict
     return results
 
 
-def _build_prompt(segments: list[dict], num_clips: int, min_dur: int, max_dur: int) -> str:
+def _build_prompts(
+    segments: list[dict],
+    num_clips: int,
+    min_dur: int,
+    max_dur: int,
+    custom_system: str | None = None,
+    custom_user: str | None = None,
+) -> tuple[str, str]:
+    """Retorna (system_prompt, user_prompt) com suporte a customização."""
     transcript_text = "\n".join(
         f"[{seg['start']:.1f}s - {seg['end']:.1f}s] {seg['text']}"
         for seg in segments
     )
-    return f"""Analyze this video transcript and identify the {num_clips} most engaging/viral segments.
-
-Requirements:
-- Each clip must be between {min_dur} and {max_dur} seconds long
-- Choose complete thoughts/stories, never cut mid-sentence
-- Prioritize: hooks, surprising facts, emotional moments, actionable tips, controversial opinions
-- Clips must not overlap
-
-Transcript:
-{transcript_text}
-
-Respond ONLY with a valid JSON array (no extra text, no markdown):
-[
-  {{"start": 10.5, "end": 75.2, "reason": "Strong hook about..."}},
-  {{"start": 120.0, "end": 195.0, "reason": "Viral moment: ..."}}
-]"""
+    system = (custom_system or DEFAULT_SYSTEM_PROMPT).strip()
+    user_template = (custom_user or DEFAULT_USER_PROMPT).strip()
+    user = user_template.format(
+        num_clips=num_clips,
+        min_dur=min_dur,
+        max_dur=max_dur,
+        transcript=transcript_text,
+    )
+    return system, user
 
 
 def _parse_llm_response(content: str, provider: str) -> list[dict]:
@@ -254,11 +305,14 @@ def _parse_llm_response(content: str, provider: str) -> list[dict]:
     raise RuntimeError(f"Nao foi possivel parsear resposta do LLM ({provider}): {content[:300]}")
 
 
-def _call_ollama(prompt: str, model: str, ollama_url: str) -> str:
+def _call_ollama(system: str, user: str, model: str, ollama_url: str) -> str:
     """Chama Ollama com streaming. timeout=None = sem limite (modelo pode demorar horas)."""
     payload = {
         "model": model,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
         "stream": True,
         "options": {"temperature": 0.3},
     }
@@ -281,12 +335,15 @@ def _call_ollama(prompt: str, model: str, ollama_url: str) -> str:
     return "".join(parts)
 
 
-def _call_openai_compat(prompt: str, model: str, api_key: str, base_url: str) -> str:
+def _call_openai_compat(system: str, user: str, model: str, api_key: str, base_url: str) -> str:
     """Chama API compativel com OpenAI (OpenAI, Groq, DeepSeek, Together, Custom) com streaming SSE."""
     url = f"{base_url.rstrip('/')}/v1/chat/completions"
     payload = {
         "model": model,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
         "stream": True,
         "temperature": 0.3,
     }
@@ -318,12 +375,13 @@ def _call_openai_compat(prompt: str, model: str, api_key: str, base_url: str) ->
     return "".join(parts)
 
 
-def _call_anthropic(prompt: str, model: str, api_key: str) -> str:
+def _call_anthropic(system: str, user: str, model: str, api_key: str) -> str:
     """Chama Anthropic API com streaming SSE."""
     payload = {
         "model": model,
         "max_tokens": 4096,
-        "messages": [{"role": "user", "content": prompt}],
+        "system": system,
+        "messages": [{"role": "user", "content": user}],
         "stream": True,
     }
     req = urllib.request.Request(
@@ -351,6 +409,29 @@ def _call_anthropic(prompt: str, model: str, api_key: str) -> str:
     return "".join(parts)
 
 
+def get_video_duration(video_path: Path) -> float:
+    """Retorna duração do vídeo em segundos via ffprobe."""
+    result = subprocess.run(
+        ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", str(video_path)],
+        capture_output=True, text=True,
+    )
+    info = json.loads(result.stdout)
+    return float(info["format"]["duration"])
+
+
+def split_equal_parts(source: Path, num_parts: int, clips_dir: Path) -> list[tuple[float, float]]:
+    """Divide o vídeo em num_parts partes iguais usando ffmpeg."""
+    duration = get_video_duration(source)
+    part_dur = duration / num_parts
+    timestamps = []
+    for i in range(num_parts):
+        start = i * part_dur
+        end = min((i + 1) * part_dur, duration)
+        timestamps.append((round(start, 3), round(end, 3)))
+        print(f"[split] Parte {i+1}/{num_parts}: {start:.1f}s - {end:.1f}s ({part_dur:.1f}s)", flush=True)
+    return timestamps
+
+
 def analyze_viral(
     segments: list[dict],
     num_clips: int,
@@ -362,23 +443,25 @@ def analyze_viral(
     llm_model: str = "",
     llm_api_key: str = "",
     llm_base_url: str = "",
+    system_prompt: str | None = None,
+    user_prompt: str | None = None,
 ) -> list[dict]:
     """Identifica os segmentos mais virais usando o provider LLM configurado."""
     model_label = llm_model if provider != "ollama" else ollama_model
     print(f"[analysis] Analisando com {provider}/{model_label} ({num_clips} clips, {min_dur}-{max_dur}s)...", flush=True)
 
-    prompt = _build_prompt(segments, num_clips, min_dur, max_dur)
+    system, user = _build_prompts(segments, num_clips, min_dur, max_dur, system_prompt, user_prompt)
 
     try:
         if provider == "ollama":
-            content = _call_ollama(prompt, ollama_model, ollama_url)
+            content = _call_ollama(system, user, ollama_model, ollama_url)
         elif provider == "anthropic":
-            content = _call_anthropic(prompt, llm_model, llm_api_key)
+            content = _call_anthropic(system, user, llm_model, llm_api_key)
         else:  # openai, groq, deepseek, together, custom
             base = llm_base_url or PROVIDER_BASE_URLS.get(provider, "")
             if not base:
                 raise ValueError(f"Base URL nao definida para provider '{provider}'")
-            content = _call_openai_compat(prompt, llm_model, llm_api_key, base)
+            content = _call_openai_compat(system, user, llm_model, llm_api_key, base)
     except Exception as e:
         raise RuntimeError(f"Erro ao chamar {provider}: {e}")
 
@@ -408,6 +491,12 @@ def main():
                         help="API key para providers externos")
     parser.add_argument("--llm-base-url", default="", dest="llm_base_url",
                         help="Base URL para provider custom (compativel com OpenAI)")
+    parser.add_argument("--split-equal", action="store_true", dest="split_equal",
+                        help="Dividir em partes iguais sem usar IA (ignora LLM e transcricao)")
+    parser.add_argument("--system-prompt", default="", dest="system_prompt",
+                        help="System prompt customizado para o LLM")
+    parser.add_argument("--user-prompt", default="", dest="user_prompt",
+                        help="User prompt customizado para o LLM (use {transcript}, {num_clips}, {min_dur}, {max_dur})")
     args = parser.parse_args()
 
     clips_dir = Path(args.outdir)
@@ -445,52 +534,71 @@ def main():
             source = download_input(args.input, workdir)
             write_checkpoint(workdir, 1, "download", "Download")
 
-            # Etapa 2: Extraction
-            audio = extract_audio(source, workdir)
-            write_checkpoint(workdir, 2, "extraction", "Extracao de audio")
+            if args.split_equal:
+                # Modo: dividir em partes iguais (sem IA)
+                print(f"[split] Dividindo em {args.num_clips} partes iguais...", flush=True)
+                timestamps = split_equal_parts(source, args.num_clips, clips_dir)
+                descriptions = [f"Parte {i+1}" for i in range(len(timestamps))]
 
-            # Etapa 3: Transcription
-            segments = transcribe_for_viral(audio, args.whisper_model)
-            if not segments:
-                raise RuntimeError("Nenhum segmento de fala detectado no audio")
-            write_checkpoint(workdir, 3, "transcription", "Transcricao")
+                # Etapa 2: Cutting
+                cut_clips(source, timestamps, clips_dir)
+                write_checkpoint(workdir, 2, "cutting", "Cortando clips")
+                save_clips_metadata(clips_dir, timestamps, descriptions)
 
-            # Etapa 4: Analysis
-            viral_clips = analyze_viral(
-                segments,
-                args.num_clips,
-                args.min_duration,
-                args.max_duration,
-                provider=args.llm_provider,
-                ollama_model=args.ollama_model,
-                ollama_url=args.ollama_url,
-                llm_model=args.llm_model,
-                llm_api_key=args.llm_api_key,
-                llm_base_url=args.llm_base_url,
-            )
-            print(f"[analysis] {len(viral_clips)} clips identificados:", flush=True)
-            timestamps = []
-            descriptions = []
-            for c in viral_clips:
-                start = float(c.get("start", 0))
-                end = float(c.get("end", 0))
-                reason = c.get("reason", "")
-                print(f"  {start:.1f}s - {end:.1f}s: {reason}", flush=True)
-                if end > start:
-                    timestamps.append((start, end))
-                    descriptions.append(reason)
-            if not timestamps:
-                raise RuntimeError("Nenhum clip valido retornado pelo LLM")
-            write_checkpoint(workdir, 4, "analysis", "Analise viral")
+                # Etapa 3: ZIP
+                create_zip(clips_dir)
+                write_checkpoint(workdir, 3, "zip", "Criando ZIP")
 
-            # Etapa 5: Cutting
-            cut_clips(source, timestamps, clips_dir)
-            write_checkpoint(workdir, 5, "cutting", "Cortando clips")
-            save_clips_metadata(clips_dir, timestamps, descriptions)
+            else:
+                # Modo: análise viral com LLM
+                # Etapa 2: Extraction
+                audio = extract_audio(source, workdir)
+                write_checkpoint(workdir, 2, "extraction", "Extracao de audio")
 
-            # Etapa 6: ZIP
-            create_zip(clips_dir)
-            write_checkpoint(workdir, 6, "zip", "Criando ZIP")
+                # Etapa 3: Transcription
+                segments = transcribe_for_viral(audio, args.whisper_model)
+                if not segments:
+                    raise RuntimeError("Nenhum segmento de fala detectado no audio")
+                write_checkpoint(workdir, 3, "transcription", "Transcricao")
+
+                # Etapa 4: Analysis
+                viral_clips = analyze_viral(
+                    segments,
+                    args.num_clips,
+                    args.min_duration,
+                    args.max_duration,
+                    provider=args.llm_provider,
+                    ollama_model=args.ollama_model,
+                    ollama_url=args.ollama_url,
+                    llm_model=args.llm_model,
+                    llm_api_key=args.llm_api_key,
+                    llm_base_url=args.llm_base_url,
+                    system_prompt=args.system_prompt or None,
+                    user_prompt=args.user_prompt or None,
+                )
+                print(f"[analysis] {len(viral_clips)} clips identificados:", flush=True)
+                timestamps = []
+                descriptions = []
+                for c in viral_clips:
+                    start = float(c.get("start", 0))
+                    end = float(c.get("end", 0))
+                    reason = c.get("reason", "")
+                    print(f"  {start:.1f}s - {end:.1f}s: {reason}", flush=True)
+                    if end > start:
+                        timestamps.append((start, end))
+                        descriptions.append(reason)
+                if not timestamps:
+                    raise RuntimeError("Nenhum clip valido retornado pelo LLM")
+                write_checkpoint(workdir, 4, "analysis", "Analise viral")
+
+                # Etapa 5: Cutting
+                cut_clips(source, timestamps, clips_dir)
+                write_checkpoint(workdir, 5, "cutting", "Cortando clips")
+                save_clips_metadata(clips_dir, timestamps, descriptions)
+
+                # Etapa 6: ZIP
+                create_zip(clips_dir)
+                write_checkpoint(workdir, 6, "zip", "Criando ZIP")
 
         print("[done] Corte concluido com sucesso!", flush=True)
         sys.exit(0)

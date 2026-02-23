@@ -67,7 +67,12 @@ export default function Dashboard() {
   return (
     <div>
       <div className="mb-8">
-        <h1 className="text-3xl font-bold">Dashboard</h1>
+        <div className="flex items-baseline gap-3">
+          <h1 className="text-3xl font-bold">Dashboard</h1>
+          {system?.version && (
+            <span className="text-sm font-mono text-gray-600">v{String(system.version)}</span>
+          )}
+        </div>
         <p className="text-gray-400 mt-1">Monitor do sistema e jobs</p>
       </div>
 

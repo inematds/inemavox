@@ -31,7 +31,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.8.0"
 
 app = FastAPI(
     title="inemaVOX API",
@@ -164,6 +164,30 @@ async def create_tts_job(config: dict):
     return job.to_dict()
 
 
+@app.post("/api/jobs/tts/upload")
+async def create_tts_job_with_ref(
+    file: UploadFile = File(...),
+    config_json: str = Form(...),
+):
+    """Criar job TTS Chatterbox com audio de referencia para voice clone."""
+    config = json.loads(config_json)
+    if "text" not in config:
+        raise HTTPException(400, "Campo obrigatorio: text")
+    suffix = Path(file.filename).suffix or ".wav"
+    safe_name = f"{uuid.uuid4().hex[:8]}_ref{suffix}"
+    upload_path = UPLOAD_DIR / safe_name
+    with open(upload_path, "wb") as f:
+        content = await file.read()
+        f.write(content)
+    config["ref_audio"] = str(upload_path.absolute())
+    config["engine"] = "chatterbox"
+    config["job_type"] = "tts_generate"
+    if "lang" not in config:
+        config["lang"] = "pt"
+    job = await job_manager.create_job(config)
+    return job.to_dict()
+
+
 @app.post("/api/jobs/voice-clone")
 async def create_voice_clone_job(
     file: UploadFile = File(...),
@@ -180,6 +204,56 @@ async def create_voice_clone_job(
         content = await file.read()
         f.write(content)
     config["ref_audio"] = str(upload_path.absolute())
+    config["engine"] = "chatterbox"
+    config["job_type"] = "voice_clone"
+    if "lang" not in config:
+        config["lang"] = "pt"
+    job = await job_manager.create_job(config)
+    return job.to_dict()
+
+
+@app.post("/api/jobs/voice-clone/url")
+async def create_voice_clone_job_url(config: dict):
+    """Criar job de voice clone baixando audio de referencia a partir de uma URL."""
+    import asyncio
+
+    ref_url = config.pop("ref_url", None)
+    if not ref_url:
+        raise HTTPException(400, "Campo obrigatorio: ref_url")
+    if "text" not in config:
+        raise HTTPException(400, "Campo obrigatorio: text")
+
+    ref_id = uuid.uuid4().hex[:8]
+    out_path = UPLOAD_DIR / f"{ref_id}_ref.mp3"
+
+    try:
+        import yt_dlp  # type: ignore
+    except ImportError:
+        raise HTTPException(500, "yt-dlp nao instalado")
+
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "outtmpl": str(UPLOAD_DIR / f"{ref_id}_ref.%(ext)s"),
+        "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}],
+        "quiet": True,
+        "no_warnings": True,
+    }
+
+    def do_download():
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([ref_url])
+
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, do_download)
+    except Exception as e:
+        raise HTTPException(500, f"Erro ao baixar referencia: {e}")
+
+    downloaded = list(UPLOAD_DIR.glob(f"{ref_id}_ref.*"))
+    if not downloaded:
+        raise HTTPException(500, "Falha ao baixar referencia — arquivo nao encontrado apos download")
+
+    config["ref_audio"] = str(downloaded[0].absolute())
     config["engine"] = "chatterbox"
     config["job_type"] = "voice_clone"
     if "lang" not in config:
@@ -210,6 +284,27 @@ async def create_download_job(config: dict):
     """Criar job de download de video (YouTube, TikTok, Instagram, etc.)."""
     if "url" not in config:
         raise HTTPException(400, "Campo obrigatorio: url")
+    config["job_type"] = "download"
+    if "quality" not in config:
+        config["quality"] = "best"
+    job = await job_manager.create_job(config)
+    return job.to_dict()
+
+
+@app.post("/api/jobs/download/upload")
+async def create_download_job_with_upload(
+    file: UploadFile = File(...),
+    config_json: str = Form(...),
+):
+    """Criar job de conversao/extracao de audio a partir de arquivo local."""
+    config = json.loads(config_json)
+    suffix = Path(file.filename).suffix or ".mp4"
+    safe_name = f"{uuid.uuid4().hex[:8]}_{Path(file.filename).stem}{suffix}"
+    upload_path = UPLOAD_DIR / safe_name
+    with open(upload_path, "wb") as f:
+        content = await file.read()
+        f.write(content)
+    config["local_file"] = str(upload_path.absolute())
     config["job_type"] = "download"
     if "quality" not in config:
         config["quality"] = "best"

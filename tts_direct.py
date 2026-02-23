@@ -116,7 +116,72 @@ def split_sentences(text: str, max_chars: int = 120) -> list[str]:
     return [s for s in sentences if s.strip()]
 
 
-def run_chatterbox(text: str, lang: str, ref: str | None, outdir: Path) -> Path:
+def run_chatterbox_vc(text: str, lang: str, ref: str | None, outdir: Path) -> Path:
+    """Pipeline VC: Edge TTS → ChatterboxVC (sem T3, sem EOS prematuro).
+
+    Vantagens sobre MTL:
+    - Sem LLM autoregressive → sem risco de EOS prematuro ou loop
+    - S3Gen decoder foca 100% em transferir o timbre do ref
+    - Edge TTS garante fala natural, VC converte apenas o timbre
+    """
+    if not ref or not Path(ref).exists():
+        raise RuntimeError(
+            "Engine chatterbox-vc requer --ref (audio de referencia) obrigatorio."
+        )
+
+    chatterbox_python = os.environ.get(
+        "CHATTERBOX_PYTHON",
+        "/home/nmaldaner/miniconda3/envs/chatterbox/bin/python3"
+    )
+    if not Path(chatterbox_python).exists():
+        raise RuntimeError(
+            f"Python Chatterbox nao encontrado: {chatterbox_python}\n"
+            "Defina CHATTERBOX_PYTHON=/path/python3 do conda env chatterbox"
+        )
+
+    worker_script = Path(__file__).parent / "chatterbox_vc_worker.py"
+
+    # Converter referência para WAV 24kHz mono (necessário para ChatterboxVC.set_target_voice)
+    ref_wav = convert_ref_to_wav(ref, outdir)
+
+    # Passo 1: gerar fala neutra com Edge TTS
+    print(f"[tts_direct] VC pipeline — passo 1: gerando fala Edge TTS...", flush=True)
+    edge_out = outdir / "edge_source.mp3"
+    voice_id = EDGE_VOICE_DEFAULTS.get(lang.lower(), "pt-BR-FranciscaNeural")
+
+    async def _edge():
+        import edge_tts
+        communicate = edge_tts.Communicate(text, voice_id)
+        await communicate.save(str(edge_out))
+
+    asyncio.run(_edge())
+    print(f"[tts_direct] Edge TTS gerado: {edge_out} ({edge_out.stat().st_size} bytes)", flush=True)
+
+    # Passo 2: converter timbre com ChatterboxVC
+    print(f"[tts_direct] VC pipeline — passo 2: convertendo para voz do ref...", flush=True)
+    vc_out = outdir / "generated.wav"
+
+    cmd = [
+        chatterbox_python, str(worker_script),
+        "--source", str(edge_out),
+        "--ref",    ref_wav,
+        "--output", str(vc_out),
+    ]
+
+    result = subprocess.run(cmd, text=True, timeout=600)
+    if result.returncode != 0:
+        raise RuntimeError(f"VC worker retornou codigo {result.returncode}")
+
+    if not vc_out.exists():
+        raise RuntimeError("VC worker nao gerou o arquivo de saida")
+
+    print(f"[tts_direct] VC audio final: {vc_out} ({vc_out.stat().st_size} bytes)", flush=True)
+    return vc_out
+
+
+def run_chatterbox(text: str, lang: str, ref: str | None, outdir: Path,
+                   cfg_weight: float = 0.65, exaggeration: float = 0.5,
+                   temperature: float = 0.75) -> Path:
     chatterbox_python = os.environ.get(
         "CHATTERBOX_PYTHON",
         "/home/nmaldaner/miniconda3/envs/chatterbox/bin/python3"
@@ -160,6 +225,9 @@ def run_chatterbox(text: str, lang: str, ref: str | None, outdir: Path) -> Path:
             "--workdir", str(outdir),
             "--lang", lang,
             "--output-json", str(output_json),
+            "--cfg-weight",   str(cfg_weight),
+            "--exaggeration", str(exaggeration),
+            "--temperature",  str(temperature),
         ]
         if ref_wav:
             cmd += ["--ref", ref_wav]
@@ -206,11 +274,14 @@ def main():
     parser.add_argument("--text", required=True, help="Texto para sintetizar")
     parser.add_argument("--lang", default="pt", help="Idioma (pt, en, es...)")
     parser.add_argument("--engine", default="edge",
-                        choices=["edge", "chatterbox"],
+                        choices=["edge", "chatterbox", "chatterbox-vc"],
                         help="Motor TTS")
     parser.add_argument("--voice", default=None, help="ID de voz (Edge TTS)")
     parser.add_argument("--ref", default=None, help="Audio de referencia para voice clone")
     parser.add_argument("--outdir", required=True, help="Diretorio de saida")
+    parser.add_argument("--cfg-weight",   type=float, default=0.65)
+    parser.add_argument("--exaggeration", type=float, default=0.5)
+    parser.add_argument("--temperature",  type=float, default=0.75)
     args = parser.parse_args()
 
     outdir = Path(args.outdir)
@@ -231,7 +302,12 @@ def main():
     if args.engine == "edge":
         out = asyncio.run(run_edge(args.text, args.lang, args.voice, outdir))
     elif args.engine == "chatterbox":
-        out = run_chatterbox(args.text, args.lang, args.ref, outdir)
+        out = run_chatterbox(args.text, args.lang, args.ref, outdir,
+                             cfg_weight=args.cfg_weight,
+                             exaggeration=args.exaggeration,
+                             temperature=args.temperature)
+    elif args.engine == "chatterbox-vc":
+        out = run_chatterbox_vc(args.text, args.lang, args.ref, outdir)
     else:
         print(f"[ERRO] Engine nao suportada: {args.engine}", flush=True)
         sys.exit(1)

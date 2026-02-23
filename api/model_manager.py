@@ -5,48 +5,61 @@ import os
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 
-# Vozes Edge TTS organizadas por idioma
+# Vozes Edge TTS organizadas por codigo de idioma curto (pt, en, es, ...)
 EDGE_VOICES = {
-    "pt-BR": [
-        {"id": "pt-BR-AntonioNeural", "name": "Antonio (Masculino)", "gender": "male"},
-        {"id": "pt-BR-FranciscaNeural", "name": "Francisca (Feminino)", "gender": "female"},
-        {"id": "pt-BR-ThalitaNeural", "name": "Thalita (Feminino)", "gender": "female"},
+    "pt": [
+        {"id": "pt-BR-AntonioNeural",   "name": "Antonio BR (Masculino)",  "gender": "male"},
+        {"id": "pt-BR-FranciscaNeural", "name": "Francisca BR (Feminino)", "gender": "female"},
+        {"id": "pt-BR-ThalitaNeural",   "name": "Thalita BR (Feminino)",   "gender": "female"},
+        {"id": "pt-PT-DuarteNeural",    "name": "Duarte PT (Masculino)",   "gender": "male"},
+        {"id": "pt-PT-RaquelNeural",    "name": "Raquel PT (Feminino)",    "gender": "female"},
     ],
-    "en-US": [
-        {"id": "en-US-GuyNeural", "name": "Guy (Male)", "gender": "male"},
-        {"id": "en-US-JennyNeural", "name": "Jenny (Female)", "gender": "female"},
-        {"id": "en-US-AriaNeural", "name": "Aria (Female)", "gender": "female"},
+    "en": [
+        {"id": "en-US-GuyNeural",     "name": "Guy US (Male)",     "gender": "male"},
+        {"id": "en-US-JennyNeural",   "name": "Jenny US (Female)", "gender": "female"},
+        {"id": "en-US-AriaNeural",    "name": "Aria US (Female)",  "gender": "female"},
+        {"id": "en-US-DavisNeural",   "name": "Davis US (Male)",   "gender": "male"},
+        {"id": "en-GB-RyanNeural",    "name": "Ryan GB (Male)",    "gender": "male"},
+        {"id": "en-GB-SoniaNeural",   "name": "Sonia GB (Female)", "gender": "female"},
     ],
-    "es-ES": [
-        {"id": "es-ES-AlvaroNeural", "name": "Alvaro (Masculino)", "gender": "male"},
-        {"id": "es-ES-ElviraNeural", "name": "Elvira (Femenino)", "gender": "female"},
+    "es": [
+        {"id": "es-ES-AlvaroNeural",  "name": "Alvaro ES (Masculino)", "gender": "male"},
+        {"id": "es-ES-ElviraNeural",  "name": "Elvira ES (Femenino)",  "gender": "female"},
+        {"id": "es-MX-JorgeNeural",   "name": "Jorge MX (Masculino)",  "gender": "male"},
+        {"id": "es-MX-DaliaNeural",   "name": "Dalia MX (Femenino)",   "gender": "female"},
     ],
-    "es-MX": [
-        {"id": "es-MX-JorgeNeural", "name": "Jorge (Masculino)", "gender": "male"},
+    "fr": [
+        {"id": "fr-FR-HenriNeural",   "name": "Henri (Masculin)",  "gender": "male"},
+        {"id": "fr-FR-DeniseNeural",  "name": "Denise (Feminin)",  "gender": "female"},
+        {"id": "fr-FR-VivienneNeural","name": "Vivienne (Feminin)","gender": "female"},
     ],
-    "fr-FR": [
-        {"id": "fr-FR-HenriNeural", "name": "Henri (Masculin)", "gender": "male"},
-        {"id": "fr-FR-DeniseNeural", "name": "Denise (Feminin)", "gender": "female"},
+    "de": [
+        {"id": "de-DE-ConradNeural",  "name": "Conrad (Mannlich)", "gender": "male"},
+        {"id": "de-DE-KatjaNeural",   "name": "Katja (Weiblich)",  "gender": "female"},
+        {"id": "de-DE-AmalaNeural",   "name": "Amala (Weiblich)",  "gender": "female"},
     ],
-    "de-DE": [
-        {"id": "de-DE-ConradNeural", "name": "Conrad (Mannlich)", "gender": "male"},
-        {"id": "de-DE-KatjaNeural", "name": "Katja (Weiblich)", "gender": "female"},
+    "it": [
+        {"id": "it-IT-DiegoNeural",   "name": "Diego (Maschile)",  "gender": "male"},
+        {"id": "it-IT-ElsaNeural",    "name": "Elsa (Femminile)",  "gender": "female"},
+        {"id": "it-IT-IsabellaNeural","name": "Isabella (Femm.)",  "gender": "female"},
     ],
-    "it-IT": [
-        {"id": "it-IT-DiegoNeural", "name": "Diego (Maschile)", "gender": "male"},
-        {"id": "it-IT-ElsaNeural", "name": "Elsa (Femminile)", "gender": "female"},
+    "ja": [
+        {"id": "ja-JP-KeitaNeural",   "name": "Keita (男性)",   "gender": "male"},
+        {"id": "ja-JP-NanamiNeural",  "name": "Nanami (女性)",  "gender": "female"},
+        {"id": "ja-JP-AoiNeural",     "name": "Aoi (女性)",     "gender": "female"},
     ],
-    "ja-JP": [
-        {"id": "ja-JP-KeitaNeural", "name": "Keita (Male)", "gender": "male"},
-        {"id": "ja-JP-NanamiNeural", "name": "Nanami (Female)", "gender": "female"},
+    "zh": [
+        {"id": "zh-CN-YunyangNeural", "name": "Yunyang (男)",  "gender": "male"},
+        {"id": "zh-CN-XiaoxiaoNeural","name": "Xiaoxiao (女)", "gender": "female"},
+        {"id": "zh-CN-YunxiNeural",   "name": "Yunxi (男)",    "gender": "male"},
     ],
-    "zh-CN": [
-        {"id": "zh-CN-YunyangNeural", "name": "Yunyang (Male)", "gender": "male"},
-        {"id": "zh-CN-XiaoxiaoNeural", "name": "Xiaoxiao (Female)", "gender": "female"},
+    "ko": [
+        {"id": "ko-KR-InJoonNeural",  "name": "InJoon (남성)", "gender": "male"},
+        {"id": "ko-KR-SunHiNeural",   "name": "SunHi (여성)",  "gender": "female"},
     ],
-    "ko-KR": [
-        {"id": "ko-KR-InJoonNeural", "name": "InJoon (Male)", "gender": "male"},
-        {"id": "ko-KR-SunHiNeural", "name": "SunHi (Female)", "gender": "female"},
+    "ru": [
+        {"id": "ru-RU-DmitryNeural",  "name": "Dmitry (Муж.)", "gender": "male"},
+        {"id": "ru-RU-SvetlanaNeural","name": "Svetlana (Жен.)","gender": "female"},
     ],
 }
 

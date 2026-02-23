@@ -3,10 +3,17 @@
 
 import argparse
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
+
+CHATTERBOX_PYTHON = os.environ.get(
+    "CHATTERBOX_PYTHON",
+    "/home/nmaldaner/miniconda3/envs/chatterbox/bin/python3",
+)
 
 
 def write_checkpoint(workdir: Path, step_num: int, step_id: str, step_name: str):
@@ -86,7 +93,7 @@ def extract_audio(source: Path, workdir: Path) -> Path:
 
 
 def _has_cuda() -> bool:
-    """Verifica se CUDA esta disponivel no PyTorch E no CTranslate2 (mesmo check do dublar_pro_v5.py)."""
+    """Verifica se CUDA esta disponivel no PyTorch E no CTranslate2."""
     try:
         import torch
         if not torch.cuda.is_available():
@@ -98,9 +105,55 @@ def _has_cuda() -> bool:
         return False
 
 
+def _chatterbox_has_cuda() -> bool:
+    """Verifica se o conda env chatterbox tem CUDA disponivel."""
+    if not Path(CHATTERBOX_PYTHON).exists():
+        return False
+    try:
+        result = subprocess.run(
+            [CHATTERBOX_PYTHON, "-c", "import torch; print('1' if torch.cuda.is_available() else '0')"],
+            capture_output=True, text=True, timeout=15,
+        )
+        return result.stdout.strip() == "1"
+    except Exception:
+        return False
+
+
+def transcribe_whisper_gpu(audio_path: Path, model: str, src_lang: str | None) -> list[dict]:
+    """Transcreve via worker GPU usando openai-whisper no conda env chatterbox."""
+    worker_script = Path(__file__).parent / "whisper_gpu_worker.py"
+    output_json = audio_path.parent / "whisper_gpu_result.json"
+
+    cmd = [
+        CHATTERBOX_PYTHON, str(worker_script),
+        "--audio", str(audio_path),
+        "--model", model,
+        "--output-json", str(output_json),
+    ]
+    if src_lang:
+        cmd += ["--lang", src_lang]
+
+    print(f"[transcription] Transcrevendo com Whisper GPU ({model})...", flush=True)
+    result = subprocess.run(cmd, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"whisper_gpu_worker retornou codigo {result.returncode}")
+
+    data = json.loads(output_json.read_text(encoding="utf-8"))
+    segments = data["segments"]
+
+    for seg in segments:
+        print(f"  [{seg['start']:.1f}s -> {seg['end']:.1f}s] {seg['text']}", flush=True)
+
+    print(f"[transcription] {len(segments)} segmentos, idioma: {data.get('language', '?')}", flush=True)
+    return segments
+
+
 def transcribe_whisper(audio_path: Path, model: str, src_lang: str | None) -> list[dict]:
-    """Transcreve com faster-whisper. Retorna lista de segmentos."""
-    print(f"[transcription] Transcrevendo com faster-whisper {model}...", flush=True)
+    """Transcreve com Whisper. Usa GPU via conda env se disponivel, senao faster-whisper CPU."""
+    if _chatterbox_has_cuda():
+        return transcribe_whisper_gpu(audio_path, model, src_lang)
+
+    print(f"[transcription] Transcrevendo com faster-whisper CPU {model}...", flush=True)
     from faster_whisper import WhisperModel
 
     device = "cuda" if _has_cuda() else "cpu"

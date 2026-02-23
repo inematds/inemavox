@@ -2,6 +2,20 @@
 // This works whether accessing via localhost or remote IP
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
 
+// Uploads and media streaming bypass the Next.js rewrite proxy:
+//   - Uploads: proxy has a 10MB request body limit
+//   - Media (video/audio): proxy may not forward Range headers for seeking
+// Same pattern as WebSocket connections (direct to backend port 8010).
+function getDirectUrl(path: string): string {
+  if (API_BASE) return `${API_BASE}${path}`;
+  if (typeof window === "undefined") return path;
+  const protocol = window.location.protocol;
+  const backendHost = window.location.host.replace(":3010", ":8010");
+  return `${protocol}//${backendHost}${path}`;
+}
+// Alias kept for uploads
+const getDirectUploadUrl = getDirectUrl;
+
 async function fetchApi(path: string, options?: RequestInit) {
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
@@ -57,7 +71,7 @@ export async function createJobWithUpload(
 
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${API_BASE}/api/jobs/upload`);
+    xhr.open("POST", getDirectUploadUrl("/api/jobs/upload"));
 
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) {
@@ -101,7 +115,7 @@ export async function createCutJobWithUpload(
 
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${API_BASE}/api/jobs/cut/upload`);
+    xhr.open("POST", getDirectUploadUrl("/api/jobs/cut/upload"));
 
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) {
@@ -134,6 +148,35 @@ export async function createTtsJob(config: Record<string, unknown>) {
   return fetchApi("/api/jobs/tts", { method: "POST", body: JSON.stringify(config) });
 }
 
+export async function createTtsJobWithUpload(
+  file: File,
+  config: Record<string, unknown>,
+  onProgress?: (percent: number) => void,
+) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("config_json", JSON.stringify(config));
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", getDirectUploadUrl("/api/jobs/tts/upload"));
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(JSON.parse(xhr.responseText));
+      } else {
+        try { reject(new Error(JSON.parse(xhr.responseText).detail || `HTTP ${xhr.status}`)); }
+        catch { reject(new Error(`HTTP ${xhr.status}`)); }
+      }
+    };
+    xhr.onerror = () => reject(new Error("Erro de rede no upload"));
+    xhr.timeout = 600000;
+    xhr.send(formData);
+  });
+}
+
 export async function createVoiceCloneJobWithUpload(
   file: File,
   config: Record<string, unknown>,
@@ -145,7 +188,7 @@ export async function createVoiceCloneJobWithUpload(
 
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${API_BASE}/api/jobs/voice-clone`);
+    xhr.open("POST", getDirectUploadUrl("/api/jobs/voice-clone"));
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
     };
@@ -164,11 +207,47 @@ export async function createVoiceCloneJobWithUpload(
 }
 
 export function getAudioUrl(jobId: string) {
-  return `${API_BASE}/api/jobs/${jobId}/audio`;
+  return getDirectUrl(`/api/jobs/${jobId}/audio`);
 }
 
 export async function createDownloadJob(config: Record<string, unknown>) {
   return fetchApi("/api/jobs/download", { method: "POST", body: JSON.stringify(config) });
+}
+
+export async function createDownloadJobWithUpload(
+  file: File,
+  config: Record<string, unknown>,
+  onProgress?: (percent: number) => void,
+) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("config_json", JSON.stringify(config));
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", getDirectUploadUrl("/api/jobs/download/upload"));
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) {
+        onProgress(Math.round((e.loaded / e.total) * 100));
+      }
+    };
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(JSON.parse(xhr.responseText));
+      } else {
+        try { reject(new Error(JSON.parse(xhr.responseText).detail || xhr.responseText)); }
+        catch { reject(new Error(xhr.responseText)); }
+      }
+    };
+    xhr.onerror = () => reject(new Error("Erro de rede no upload"));
+    xhr.send(formData);
+  });
+}
+
+export async function createVoiceCloneJobFromUrl(config: Record<string, unknown>) {
+  return fetchApi("/api/jobs/voice-clone/url", { method: "POST", body: JSON.stringify(config) });
 }
 
 export async function createTranscriptionJob(config: Record<string, unknown>) {
@@ -186,7 +265,7 @@ export async function createTranscriptionJobWithUpload(
 
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${API_BASE}/api/jobs/transcribe/upload`);
+    xhr.open("POST", getDirectUploadUrl("/api/jobs/transcribe/upload"));
 
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) {
@@ -240,11 +319,11 @@ export async function deleteJob(jobId: string) {
 }
 
 export function getDownloadUrl(jobId: string) {
-  return `${API_BASE}/api/jobs/${jobId}/download`;
+  return getDirectUrl(`/api/jobs/${jobId}/download`);
 }
 
 export function getSubtitlesUrl(jobId: string, lang = "trad") {
-  return `${API_BASE}/api/jobs/${jobId}/subtitles?lang=${lang}`;
+  return getDirectUrl(`/api/jobs/${jobId}/subtitles?lang=${lang}`);
 }
 
 export async function getClips(jobId: string) {
@@ -252,15 +331,15 @@ export async function getClips(jobId: string) {
 }
 
 export function getClipUrl(jobId: string, clipName: string) {
-  return `${API_BASE}/api/jobs/${jobId}/clips/${clipName}`;
+  return getDirectUrl(`/api/jobs/${jobId}/clips/${clipName}`);
 }
 
 export function getClipsZipUrl(jobId: string) {
-  return `${API_BASE}/api/jobs/${jobId}/clips/zip`;
+  return getDirectUrl(`/api/jobs/${jobId}/clips/zip`);
 }
 
 export function getTranscriptUrl(jobId: string, format: "srt" | "txt" | "json" = "srt") {
-  return `${API_BASE}/api/jobs/${jobId}/transcript?format=${format}`;
+  return getDirectUrl(`/api/jobs/${jobId}/transcript?format=${format}`);
 }
 
 export async function getTranscriptSummary(jobId: string) {
@@ -272,7 +351,7 @@ export async function getVideoSummary(jobId: string) {
 }
 
 export function getDownloadFileUrl(jobId: string) {
-  return `${API_BASE}/api/jobs/${jobId}/download-file`;
+  return getDirectUrl(`/api/jobs/${jobId}/download-file`);
 }
 
 export function createJobWebSocket(jobId: string): WebSocket {

@@ -6,6 +6,41 @@ import { getOllamaStatus, startOllama, stopOllama, getOptions, createCutJob, cre
 
 type OllamaModel = { id: string; name: string; size_gb: number };
 
+const DEFAULT_VIRAL_SYSTEM =
+  "You are an expert video editor and social media strategist specializing in " +
+  "viral short-form content. Your goal is to identify the most engaging, " +
+  "shareable moments from video transcripts.";
+
+const DEFAULT_VIRAL_USER =
+  "Analyze this video transcript and identify the {num_clips} most engaging/viral segments.\n\n" +
+  "Requirements:\n" +
+  "- Each clip must be between {min_dur} and {max_dur} seconds long\n" +
+  "- Choose complete thoughts/stories, never cut mid-sentence\n" +
+  "- Prioritize: hooks, surprising facts, emotional moments, actionable tips, controversial opinions\n" +
+  "- Clips must not overlap\n\n" +
+  "Transcript:\n{transcript}\n\n" +
+  "Respond ONLY with a valid JSON array (no extra text, no markdown):\n" +
+  '[\n  {"start": 10.5, "end": 75.2, "reason": "Strong hook about..."},\n' +
+  '  {"start": 120.0, "end": 195.0, "reason": "Viral moment: ..."}\n]';
+
+const DEFAULT_TOPIC_SYSTEM =
+  "You are an expert content analyst specializing in segmenting video content by topic. " +
+  "Your goal is to identify distinct subjects discussed and group related content together " +
+  "into coherent clips, one per topic.";
+
+const DEFAULT_TOPIC_USER =
+  "Analyze this video transcript and identify all distinct topics or subjects discussed.\n\n" +
+  "Requirements:\n" +
+  "- Each clip must cover one complete topic or subject area\n" +
+  "- Group related consecutive content about the same topic together\n" +
+  "- Each clip must be between {min_dur} and {max_dur} seconds long\n" +
+  "- Find at most {num_clips} topics (find fewer if there are fewer distinct subjects)\n" +
+  "- Clips must not overlap\n\n" +
+  "Transcript:\n{transcript}\n\n" +
+  "Respond ONLY with a valid JSON array (no extra text, no markdown):\n" +
+  '[\n  {"start": 10.5, "end": 75.2, "reason": "Assunto: Introducao e contexto"},\n' +
+  '  {"start": 120.0, "end": 195.0, "reason": "Assunto: ..."}\n]';
+
 export default function CutPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
@@ -22,11 +57,21 @@ export default function CutPage() {
   // Manual
   const [timestamps, setTimestamps] = useState("");
 
-  // Viral — clips
+  // Viral — análise
+  const [analysisMode, setAnalysisMode] = useState<"viral" | "topics">("viral");
   const [numClips, setNumClips] = useState(5);
   const [minDuration, setMinDuration] = useState(30);
   const [maxDuration, setMaxDuration] = useState(120);
   const [whisperModel, setWhisperModel] = useState("large-v3");
+
+  // Prompts — viral
+  const [viralSystem, setViralSystem] = useState(DEFAULT_VIRAL_SYSTEM);
+  const [viralUser, setViralUser] = useState(DEFAULT_VIRAL_USER);
+  // Prompts — topics
+  const [topicSystem, setTopicSystem] = useState(DEFAULT_TOPIC_SYSTEM);
+  const [topicUser, setTopicUser] = useState(DEFAULT_TOPIC_USER);
+
+  const [showPromptEditor, setShowPromptEditor] = useState(false);
 
   // LLM provider
   const [llmProvider, setLlmProvider] = useState<"ollama" | "openai" | "anthropic" | "groq" | "deepseek" | "together" | "openrouter" | "custom">("ollama");
@@ -85,7 +130,8 @@ export default function CutPage() {
         if (!timestamps.trim()) throw new Error("Informe os timestamps no modo manual");
         config.timestamps = timestamps.trim();
       } else {
-        config.num_clips = numClips;
+        // num_clips: for topics with 0 (auto), send 20 as upper bound
+        config.num_clips = analysisMode === "topics" && numClips === 0 ? 20 : numClips;
         config.min_duration = minDuration;
         config.max_duration = maxDuration;
         config.whisper_model = whisperModel;
@@ -97,6 +143,19 @@ export default function CutPage() {
           config.llm_api_key = llmApiKey;
           if (llmProvider === "custom") config.llm_base_url = llmBaseUrl;
         }
+
+        // Prompts (only send if different from backend viral defaults)
+        const activeSystem = analysisMode === "topics" ? topicSystem : viralSystem;
+        const activeUser = analysisMode === "topics" ? topicUser : viralUser;
+        const defaultSystem = analysisMode === "topics" ? DEFAULT_TOPIC_SYSTEM : DEFAULT_VIRAL_SYSTEM;
+        const defaultUser = analysisMode === "topics" ? DEFAULT_TOPIC_USER : DEFAULT_VIRAL_USER;
+
+        // Always send for topics mode (backend default is viral); send for viral only if changed
+        if (analysisMode === "topics" || activeSystem !== DEFAULT_VIRAL_SYSTEM) config.system_prompt = activeSystem !== defaultSystem ? activeSystem : (analysisMode === "topics" ? DEFAULT_TOPIC_SYSTEM : undefined);
+        if (analysisMode === "topics") config.system_prompt = activeSystem;
+        if (analysisMode === "topics") config.user_prompt = activeUser;
+        if (analysisMode === "viral" && activeSystem !== DEFAULT_VIRAL_SYSTEM) config.system_prompt = activeSystem;
+        if (analysisMode === "viral" && activeUser !== DEFAULT_VIRAL_USER) config.user_prompt = activeUser;
       }
 
       const job = uploadFile
@@ -111,11 +170,20 @@ export default function CutPage() {
     }
   };
 
+  const llmReady = llmProvider === "ollama" ? !!ollamaOnline : (!!llmModel && !!llmApiKey);
+
+  const activeSystem = analysisMode === "topics" ? topicSystem : viralSystem;
+  const activeUser = analysisMode === "topics" ? topicUser : viralUser;
+  const setActiveSystem = analysisMode === "topics" ? setTopicSystem : setViralSystem;
+  const setActiveUser = analysisMode === "topics" ? setTopicUser : setViralUser;
+  const defaultActiveSystem = analysisMode === "topics" ? DEFAULT_TOPIC_SYSTEM : DEFAULT_VIRAL_SYSTEM;
+  const defaultActiveUser = analysisMode === "topics" ? DEFAULT_TOPIC_USER : DEFAULT_VIRAL_USER;
+
   return (
     <div className="max-w-3xl mx-auto">
       <div className="mb-8">
         <h1 className="text-3xl font-bold mb-2">Cortar Video</h1>
-        <p className="text-gray-400">Extraia clips por timestamps manuais ou deixe a IA identificar os momentos mais virais</p>
+        <p className="text-gray-400">Extraia clips por timestamps manuais ou deixe a IA identificar os momentos certos</p>
       </div>
 
       {error && (
@@ -174,8 +242,8 @@ export default function CutPage() {
             }`}>
               <input type="radio" checked={mode === "viral"} onChange={() => setMode("viral")} className="mt-1" />
               <div>
-                <div className="font-medium">Viral (IA)</div>
-                <div className="text-sm text-gray-400">LLM identifica os melhores momentos</div>
+                <div className="font-medium">Analise (IA)</div>
+                <div className="text-sm text-gray-400">LLM transcreve e analisa o conteudo</div>
               </div>
             </label>
           </div>
@@ -207,14 +275,43 @@ export default function CutPage() {
         {/* Viral config */}
         {mode === "viral" && (
           <section className="border border-orange-900/30 bg-orange-950/10 rounded-lg p-5 space-y-5">
-            <h2 className="text-lg font-semibold">Configuracao Viral</h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold">Analise</h2>
+              <div className="flex gap-1 bg-gray-900 border border-gray-700 rounded-lg p-1">
+                <button type="button"
+                  onClick={() => setAnalysisMode("viral")}
+                  className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${
+                    analysisMode === "viral"
+                      ? "bg-orange-500/30 text-orange-300"
+                      : "text-gray-400 hover:text-gray-300"
+                  }`}>
+                  Viral
+                </button>
+                <button type="button"
+                  onClick={() => { setAnalysisMode("topics"); if (numClips === 5) setNumClips(0); }}
+                  className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${
+                    analysisMode === "topics"
+                      ? "bg-purple-500/30 text-purple-300"
+                      : "text-gray-400 hover:text-gray-300"
+                  }`}>
+                  Assunto
+                </button>
+              </div>
+            </div>
+            {analysisMode === "topics" && (
+              <p className="text-xs text-purple-400/80 -mt-3">
+                A IA identifica os diferentes assuntos discutidos e cria um clip por topico.
+              </p>
+            )}
 
-            {/* Clips config */}
+            {/* Clips / topics count + duration */}
             <div className="grid grid-cols-3 gap-4">
               <div>
-                <label className="block text-sm text-gray-400 mb-1">Numero de clips</label>
+                <label className="block text-sm text-gray-400 mb-1">
+                  {analysisMode === "topics" ? "Max. topicos (0 = auto)" : "Numero de clips"}
+                </label>
                 <input
-                  type="number" min={1} max={20} value={numClips}
+                  type="number" min={0} max={analysisMode === "topics" ? 50 : 20} value={numClips}
                   onChange={(e) => setNumClips(Number(e.target.value))}
                   className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white"
                 />
@@ -258,7 +355,7 @@ export default function CutPage() {
             {/* LLM Provider selector */}
             <div>
               <label className="block text-sm text-gray-400 mb-2">Modelo de Analise (LLM)</label>
-              <div className="flex gap-2 mb-3">
+              <div className="flex gap-2 mb-3 flex-wrap">
                 {(["ollama", "openai", "anthropic", "groq", "deepseek", "together", "openrouter", "custom"] as const).map((p) => (
                   <button key={p} type="button" onClick={() => setLlmProvider(p)}
                     className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
@@ -401,16 +498,78 @@ export default function CutPage() {
                 </div>
               )}
             </div>
+
+            {/* Prompt customization (collapsible, open by default) */}
+            <div className="border border-gray-700/50 rounded-lg overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setShowPromptEditor((v) => !v)}
+                className="w-full flex items-center justify-between px-4 py-3 text-sm text-gray-400 hover:text-gray-300 hover:bg-gray-800/50 transition-colors"
+              >
+                <span className="font-medium">
+                  Prompt do LLM
+                  {analysisMode === "topics" && (
+                    <span className="ml-2 text-xs text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded-full">Por Assunto</span>
+                  )}
+                  {(activeSystem !== defaultActiveSystem || activeUser !== defaultActiveUser) && (
+                    <span className="ml-2 text-xs text-orange-400 bg-orange-500/10 px-2 py-0.5 rounded-full">modificado</span>
+                  )}
+                </span>
+                <span className="text-lg leading-none">{showPromptEditor ? "▲" : "▼"}</span>
+              </button>
+
+              {showPromptEditor && (
+                <div className="px-4 pb-4 space-y-4 border-t border-gray-700/50 pt-4">
+                  <p className="text-xs text-gray-500">
+                    Variaveis no User Prompt:{" "}
+                    <code className="bg-gray-800 px-1 rounded">{"{num_clips}"}</code>{" "}
+                    <code className="bg-gray-800 px-1 rounded">{"{min_dur}"}</code>{" "}
+                    <code className="bg-gray-800 px-1 rounded">{"{max_dur}"}</code>{" "}
+                    <code className="bg-gray-800 px-1 rounded">{"{transcript}"}</code>
+                  </p>
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs text-gray-400 font-medium">System Prompt</label>
+                      {activeSystem !== defaultActiveSystem && (
+                        <button type="button" onClick={() => setActiveSystem(defaultActiveSystem)}
+                          className="text-xs text-gray-500 hover:text-gray-300">Restaurar padrao</button>
+                      )}
+                    </div>
+                    <textarea
+                      value={activeSystem}
+                      onChange={(e) => setActiveSystem(e.target.value)}
+                      rows={3}
+                      className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-xs font-mono focus:border-orange-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs text-gray-400 font-medium">User Prompt</label>
+                      {activeUser !== defaultActiveUser && (
+                        <button type="button" onClick={() => setActiveUser(defaultActiveUser)}
+                          className="text-xs text-gray-500 hover:text-gray-300">Restaurar padrao</button>
+                      )}
+                    </div>
+                    <textarea
+                      value={activeUser}
+                      onChange={(e) => setActiveUser(e.target.value)}
+                      rows={9}
+                      className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-xs font-mono focus:border-orange-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
           </section>
         )}
 
         {/* Submit */}
         <div className="space-y-2">
           <button type="submit"
-            disabled={loading || (!input && !uploadFile) || (mode === "viral" && llmProvider === "ollama" && !ollamaOnline) || (mode === "viral" && llmProvider !== "ollama" && (!llmModel || !llmApiKey))}
+            disabled={loading || (!input && !uploadFile) || (mode === "viral" && !llmReady)}
             className={`w-full disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-6 py-3 rounded-lg font-medium text-lg transition-colors ${
               mode === "viral"
-                ? "bg-orange-600 hover:bg-orange-700"
+                ? analysisMode === "topics" ? "bg-purple-600 hover:bg-purple-700" : "bg-orange-600 hover:bg-orange-700"
                 : "bg-blue-600 hover:bg-blue-700"
             }`}>
             {loading
@@ -418,7 +577,7 @@ export default function CutPage() {
                 ? `Enviando... ${uploadProgress}%`
                 : "Iniciando..."
               : mode === "viral"
-              ? "Analisar e Cortar"
+              ? analysisMode === "topics" ? "Analisar por Assunto" : "Analisar Viral"
               : "Cortar Video"}
           </button>
           {loading && uploadProgress !== null && (

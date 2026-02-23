@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { createVoiceCloneJobWithUpload, getAudioUrl, createJobWebSocket } from "@/lib/api";
+import { createVoiceCloneJobWithUpload, createVoiceCloneJobFromUrl, getAudioUrl, createJobWebSocket } from "@/lib/api";
 
 const LANGS = [
   { code: "pt", label: "Português (BR)" },
@@ -145,10 +145,17 @@ function RefQualityBadge({ analysis }: { analysis: RefAnalysis | null }) {
 }
 
 export default function VoiceClonePage() {
+  const [refMode, setRefMode] = useState<"file" | "url">("file");
   const [refFile, setRefFile] = useState<File | null>(null);
+  const [refUrl, setRefUrl] = useState("");
   const [refAnalysis, setRefAnalysis] = useState<RefAnalysis | null>(null);
   const [text, setText] = useState("");
   const [lang, setLang] = useState("pt");
+  const [vcMode, setVcMode] = useState<"mtl" | "vc">("mtl");
+  const [cfgWeight,   setCfgWeight]   = useState(0.65);
+  const [exaggeration, setExaggeration] = useState(0.5);
+  const [temperature,  setTemperature]  = useState(0.75);
+  const [showParams, setShowParams] = useState(false);
   const [status, setStatus] = useState<"idle" | "uploading" | "loading" | "done" | "error">("idle");
   const [uploadPct, setUploadPct] = useState(0);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -171,20 +178,36 @@ export default function VoiceClonePage() {
   }
 
   async function runClone() {
-    if (!refFile || !text.trim()) return;
+    const hasFile = refMode === "file" && !!refFile;
+    const hasUrl = refMode === "url" && !!refUrl.trim();
+    if ((!hasFile && !hasUrl) || !text.trim()) return;
+
     wsRef.current?.close();
-    setStatus("uploading");
     setError("");
     setJobId(null);
     setUploadPct(0);
-    setProgress("Enviando audio de referencia...");
 
     try {
-      const job = await createVoiceCloneJobWithUpload(
-        refFile,
-        { text, lang },
-        (pct) => setUploadPct(pct),
-      ) as { id: string };
+      let job: { id: string };
+
+      const engine = vcMode === "vc" ? "chatterbox-vc" : "chatterbox";
+      const params = vcMode === "mtl"
+        ? { cfg_weight: cfgWeight, exaggeration, temperature, engine }
+        : { engine };
+
+      if (hasUrl) {
+        setStatus("loading");
+        setProgress("Baixando audio de referencia...");
+        job = await createVoiceCloneJobFromUrl({ text, lang, ref_url: refUrl.trim(), ...params }) as { id: string };
+      } else {
+        setStatus("uploading");
+        setProgress("Enviando audio de referencia...");
+        job = await createVoiceCloneJobWithUpload(
+          refFile!,
+          { text, lang, ...params },
+          (pct) => setUploadPct(pct),
+        ) as { id: string };
+      }
 
       setJobId(job.id);
       setStatus("loading");
@@ -219,7 +242,9 @@ export default function VoiceClonePage() {
   }
 
   const busy = status === "uploading" || status === "loading";
-  const refInsuficiente = refAnalysis?.level === "insuficiente";
+  const refInsuficiente = refMode === "file" && refAnalysis?.level === "insuficiente";
+  const canSubmit = !busy && !!text.trim() && !refInsuficiente &&
+    (refMode === "url" ? !!refUrl.trim() : !!refFile);
 
   return (
     <div className="max-w-2xl mx-auto">
@@ -229,40 +254,62 @@ export default function VoiceClonePage() {
       <form onSubmit={handleSubmit} className="space-y-5">
         {/* Audio de referencia */}
         <div className="border border-gray-800 rounded-lg p-5">
-          <label className="block text-sm text-gray-400 mb-3">
-            Audio de Referencia
-            <span className="ml-2 text-gray-600 text-xs">WAV, MP3, MP4 — mínimo 5s, ideal 10-30s</span>
-          </label>
-          <label className={`flex flex-col items-center justify-center border-2 border-dashed rounded-lg p-8 cursor-pointer transition-colors ${
-            refInsuficiente
-              ? "border-red-500/50 hover:border-red-500/70"
-              : refAnalysis?.level === "excelente"
-              ? "border-green-500/50 hover:border-green-500/70"
-              : refAnalysis?.level === "boa"
-              ? "border-yellow-400/50 hover:border-yellow-400/70"
-              : "border-gray-700 hover:border-pink-500/50"
-          }`}>
-            {refFile ? (
-              <div className="text-center">
-                <div className="text-pink-400 font-medium">{refFile.name}</div>
-                <div className="text-gray-500 text-xs mt-1">{(refFile.size / 1024 / 1024).toFixed(1)} MB</div>
-              </div>
-            ) : (
-              <div className="text-center text-gray-500">
-                <div className="text-3xl mb-2">🎤</div>
-                <div className="text-sm">Clique para selecionar o audio de referencia</div>
-              </div>
-            )}
-            <input
-              type="file"
-              accept="audio/*,video/*"
-              className="hidden"
-              onChange={(e) => handleRefChange(e.target.files?.[0] || null)}
-            />
-          </label>
+          <div className="flex items-center justify-between mb-3">
+            <label className="text-sm text-gray-400">Audio de Referencia</label>
+            {/* Toggle arquivo / link */}
+            <div className="flex gap-1 bg-gray-900 border border-gray-800 rounded-lg p-0.5">
+              <button type="button" onClick={() => setRefMode("file")}
+                className={`px-3 py-1 rounded text-xs font-medium transition-colors ${refMode === "file" ? "bg-pink-600 text-white" : "text-gray-400 hover:text-white"}`}>
+                Arquivo
+              </button>
+              <button type="button" onClick={() => setRefMode("url")}
+                className={`px-3 py-1 rounded text-xs font-medium transition-colors ${refMode === "url" ? "bg-pink-600 text-white" : "text-gray-400 hover:text-white"}`}>
+                Link (URL)
+              </button>
+            </div>
+          </div>
 
-          {/* Badge de qualidade */}
-          <RefQualityBadge analysis={refAnalysis} />
+          {refMode === "file" ? (
+            <>
+              <p className="text-xs text-gray-600 mb-3">WAV, MP3, MP4 — minimo 5s, ideal 10-30s</p>
+              <label className={`flex flex-col items-center justify-center border-2 border-dashed rounded-lg p-8 cursor-pointer transition-colors ${
+                refInsuficiente
+                  ? "border-red-500/50 hover:border-red-500/70"
+                  : refAnalysis?.level === "excelente"
+                  ? "border-green-500/50 hover:border-green-500/70"
+                  : refAnalysis?.level === "boa"
+                  ? "border-yellow-400/50 hover:border-yellow-400/70"
+                  : "border-gray-700 hover:border-pink-500/50"
+              }`}>
+                {refFile ? (
+                  <div className="text-center">
+                    <div className="text-pink-400 font-medium">{refFile.name}</div>
+                    <div className="text-gray-500 text-xs mt-1">{(refFile.size / 1024 / 1024).toFixed(1)} MB</div>
+                  </div>
+                ) : (
+                  <div className="text-center text-gray-500">
+                    <div className="text-3xl mb-2">🎤</div>
+                    <div className="text-sm">Clique para selecionar o audio de referencia</div>
+                  </div>
+                )}
+                <input type="file" accept="audio/*,video/*" className="hidden"
+                  onChange={(e) => handleRefChange(e.target.files?.[0] || null)} />
+              </label>
+              <RefQualityBadge analysis={refAnalysis} />
+            </>
+          ) : (
+            <>
+              <p className="text-xs text-gray-600 mb-3">YouTube, TikTok, Instagram, URL direta de MP3/WAV — o audio sera baixado como referencia</p>
+              <input
+                type="url"
+                value={refUrl}
+                onChange={(e) => setRefUrl(e.target.value)}
+                placeholder="https://www.youtube.com/watch?v=..."
+                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:border-pink-500 focus:outline-none text-sm"
+              />
+              <p className="text-xs text-gray-600 mt-2">O sistema extrai automaticamente o audio do link. Use trechos curtos (30s-2min) para melhores resultados.</p>
+            </>
+          )}
         </div>
 
         {/* Texto */}
@@ -289,8 +336,130 @@ export default function VoiceClonePage() {
           </select>
         </div>
 
-        {/* Upload progress */}
-        {status === "uploading" && (
+        {/* Modo de clonagem */}
+        <div className="border border-gray-800 rounded-lg p-5">
+          <label className="block text-sm text-gray-400 mb-3">Modo de Clonagem</label>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => setVcMode("mtl")}
+              className={`p-3 rounded-lg border text-left transition-colors ${
+                vcMode === "mtl"
+                  ? "border-pink-500 bg-pink-500/10"
+                  : "border-gray-700 hover:border-gray-600"
+              }`}
+            >
+              <div className="text-sm font-semibold text-white mb-1">Chatterbox MTL</div>
+              <div className="text-xs text-gray-500">LLM + decoder. Mais expressivo, parâmetros ajustáveis.</div>
+            </button>
+            <button
+              type="button"
+              onClick={() => setVcMode("vc")}
+              className={`p-3 rounded-lg border text-left transition-colors ${
+                vcMode === "vc"
+                  ? "border-pink-500 bg-pink-500/10"
+                  : "border-gray-700 hover:border-gray-600"
+              }`}
+            >
+              <div className="text-sm font-semibold text-white mb-1">VC Pipeline ✨</div>
+              <div className="text-xs text-gray-500">Edge TTS → conversão de timbre. Maior fidelidade de voz.</div>
+            </button>
+          </div>
+          {vcMode === "vc" && (
+            <p className="text-xs text-gray-600 mt-3">
+              Gera a fala com Edge TTS (qualidade natural garantida) e converte apenas o timbre para o da referência usando o decodificador S3Gen — sem LLM, sem risco de corte prematuro.
+            </p>
+          )}
+        </div>
+
+        {/* Parametros de clonagem (apenas modo MTL) */}
+        {vcMode === "mtl" && (
+        <div className="border border-gray-800 rounded-lg overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setShowParams(!showParams)}
+            className="w-full flex items-center justify-between px-5 py-3 text-sm text-gray-400 hover:text-white hover:bg-gray-800/50 transition-colors"
+          >
+            <span className="font-medium">Parametros de Clonagem MTL</span>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-gray-600">
+                cfg={cfgWeight.toFixed(2)} · exp={exaggeration.toFixed(2)} · temp={temperature.toFixed(2)}
+              </span>
+              <span className={`text-xs transition-transform ${showParams ? "rotate-180" : ""}`}>▾</span>
+            </div>
+          </button>
+
+          {showParams && (
+            <div className="px-5 pb-5 pt-1 border-t border-gray-800 space-y-4">
+              {/* cfg_weight */}
+              <div>
+                <div className="flex justify-between mb-1">
+                  <label className="text-sm text-gray-300 font-medium">Fidelidade da Voz <span className="text-gray-500 font-normal">(cfg_weight)</span></label>
+                  <span className="text-sm font-mono text-pink-400">{cfgWeight.toFixed(2)}</span>
+                </div>
+                <input type="range" min="0.1" max="1.0" step="0.05"
+                  value={cfgWeight} onChange={(e) => setCfgWeight(Number(e.target.value))}
+                  className="w-full accent-pink-500" />
+                <div className="flex justify-between text-xs text-gray-600 mt-0.5">
+                  <span>0.1 — voz generica</span>
+                  <span>0.65 recomendado</span>
+                  <span>1.0 — max fidelidade</span>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  Controla o CFG (Classifier-Free Guidance). Valores altos = T3 segue mais o embedding do falante = voz mais parecida. Muito alto pode gerar artefatos.
+                </p>
+              </div>
+
+              {/* exaggeration */}
+              <div>
+                <div className="flex justify-between mb-1">
+                  <label className="text-sm text-gray-300 font-medium">Expressividade <span className="text-gray-500 font-normal">(exaggeration)</span></label>
+                  <span className="text-sm font-mono text-pink-400">{exaggeration.toFixed(2)}</span>
+                </div>
+                <input type="range" min="0.1" max="1.0" step="0.05"
+                  value={exaggeration} onChange={(e) => setExaggeration(Number(e.target.value))}
+                  className="w-full accent-pink-500" />
+                <div className="flex justify-between text-xs text-gray-600 mt-0.5">
+                  <span>0.1 — voz plana</span>
+                  <span>0.5 recomendado</span>
+                  <span>1.0 — muito expressivo</span>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  Emotion adversarial guidance. Captura as caracteristicas prosodicas e emocionais do falante. Valores muito altos podem exagerar a entonacao.
+                </p>
+              </div>
+
+              {/* temperature */}
+              <div>
+                <div className="flex justify-between mb-1">
+                  <label className="text-sm text-gray-300 font-medium">Temperatura <span className="text-gray-500 font-normal">(temperature)</span></label>
+                  <span className="text-sm font-mono text-pink-400">{temperature.toFixed(2)}</span>
+                </div>
+                <input type="range" min="0.1" max="1.5" step="0.05"
+                  value={temperature} onChange={(e) => setTemperature(Number(e.target.value))}
+                  className="w-full accent-pink-500" />
+                <div className="flex justify-between text-xs text-gray-600 mt-0.5">
+                  <span>0.1 — determinístico</span>
+                  <span>0.75 recomendado</span>
+                  <span>1.5 — muito variado</span>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  Aleatoriedade do sampling no T3. Valores baixos = fala mais uniforme/repetitiva. Valores altos = mais variacao natural mas risco de instabilidade.
+                </p>
+              </div>
+
+              <button type="button"
+                onClick={() => { setCfgWeight(0.65); setExaggeration(0.5); setTemperature(0.75); }}
+                className="text-xs text-gray-500 hover:text-gray-300 transition-colors">
+                ↺ Resetar para recomendados
+              </button>
+            </div>
+          )}
+        </div>
+        )}
+
+        {/* Upload progress (modo arquivo) */}
+        {status === "uploading" && refMode === "file" && (
           <div className="space-y-1">
             <div className="flex justify-between text-xs text-gray-400">
               <span>Enviando...</span><span>{uploadPct}%</span>
@@ -307,10 +476,10 @@ export default function VoiceClonePage() {
 
         <button
           type="submit"
-          disabled={!refFile || !text.trim() || busy || refInsuficiente}
+          disabled={!canSubmit}
           className="w-full py-3 rounded-lg font-semibold transition-colors bg-pink-600 hover:bg-pink-500 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {busy ? progress : refInsuficiente ? "Referência insuficiente — troque o áudio" : "Clonar Voz e Gerar Audio"}
+          {busy ? progress : refInsuficiente ? "Referencia insuficiente — troque o audio" : "Clonar Voz e Gerar Audio"}
         </button>
       </form>
 
@@ -330,7 +499,7 @@ export default function VoiceClonePage() {
             <button
               type="button"
               onClick={runClone}
-              disabled={!refFile}
+              disabled={!(refMode === "url" ? refUrl.trim() : refFile)}
               className="px-5 py-2.5 bg-pink-600 hover:bg-pink-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg font-semibold transition-colors text-sm"
             >
               ↺ Repetir Clone

@@ -240,6 +240,18 @@ export default function JobDetail() {
                 <span className="mx-2">|</span>Qualidade: {String(config.quality || "best")}
               </>
             )}
+            {jobType === "tts_generate" && (
+              <>
+                <span className="mx-2">|</span>Engine: {String(config.engine || "edge")}
+                {config.lang && <><span className="mx-2">|</span>Idioma: {String(config.lang)}</>}
+              </>
+            )}
+            {jobType === "voice_clone" && (
+              <>
+                <span className="mx-2">|</span>Engine: {String(config.engine || "chatterbox")}
+                {config.lang && <><span className="mx-2">|</span>Idioma: {String(config.lang)}</>}
+              </>
+            )}
           </p>
         </div>
         <div className="flex gap-2">
@@ -505,12 +517,20 @@ export default function JobDetail() {
       {/* Results - Download */}
       {isCompleted && jobType === "download" && (
         <section className="border border-green-500/30 bg-green-500/5 rounded-lg p-5 mb-6">
-          <h2 className="text-lg font-semibold text-green-400 mb-4">Video Baixado</h2>
-          <div className="bg-black rounded-lg overflow-hidden mb-4">
-            <video controls className="w-full" src={getDownloadFileUrl(jobId)}>
-              Seu navegador nao suporta video.
-            </video>
-          </div>
+          <h2 className="text-lg font-semibold text-green-400 mb-4">
+            {config.quality === "audio" ? "Audio Extraido" : "Video Baixado"}
+          </h2>
+          {config.quality === "audio" ? (
+            <audio controls className="w-full mb-4" src={getDownloadFileUrl(jobId)}>
+              Seu navegador nao suporta audio.
+            </audio>
+          ) : (
+            <div className="bg-black rounded-lg overflow-hidden mb-4">
+              <video controls className="w-full" src={getDownloadFileUrl(jobId)}>
+                Seu navegador nao suporta video.
+              </video>
+            </div>
+          )}
           <a href={getDownloadFileUrl(jobId)} download
             className="inline-flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
             ⬇ Download
@@ -602,9 +622,50 @@ export default function JobDetail() {
       {/* Config */}
       <section className="border border-gray-800 rounded-lg p-5 mb-6">
         <h2 className="text-lg font-semibold mb-3">Configuracao</h2>
-        {jobType !== "download" && (
+        {jobType !== "download" && jobType !== "tts_generate" && jobType !== "voice_clone" && (
           <div className="text-sm mb-3">
             <span className="text-gray-500">Input:</span> <span className="text-gray-300 break-all">{String(config.input || "-")}</span>
+          </div>
+        )}
+        {(jobType === "tts_generate" || jobType === "voice_clone") && config.text && (
+          <div className="text-sm mb-3 p-3 bg-gray-900 rounded-lg border border-gray-800">
+            <span className="text-gray-500 block mb-1">Texto:</span>
+            <span className="text-gray-200 leading-relaxed">{String(config.text)}</span>
+          </div>
+        )}
+        {jobType === "tts_generate" && (
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <div><span className="text-gray-500">Engine:</span> {String(config.engine || "edge")}</div>
+            <div><span className="text-gray-500">Idioma:</span> {String(config.lang || "pt")}</div>
+            {config.voice && <div className="col-span-2"><span className="text-gray-500">Voz:</span> {String(config.voice)}</div>}
+            {config.engine === "chatterbox" && (
+              <>
+                <div><span className="text-gray-500">cfg_weight:</span> {String(config.cfg_weight ?? 0.65)}</div>
+                <div><span className="text-gray-500">exaggeration:</span> {String(config.exaggeration ?? 0.5)}</div>
+                <div><span className="text-gray-500">temperature:</span> {String(config.temperature ?? 0.75)}</div>
+              </>
+            )}
+            {config.ref_audio && (
+              <div className="col-span-2"><span className="text-gray-500">Referência:</span> <span className="text-gray-300 break-all">{String(config.ref_audio).split("/").pop()}</span></div>
+            )}
+            <div><span className="text-gray-500">Device:</span> <span className={device === "cuda" ? "text-green-400" : "text-yellow-400"}>{device.toUpperCase()}</span></div>
+          </div>
+        )}
+        {jobType === "voice_clone" && (
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <div><span className="text-gray-500">Engine:</span> {String(config.engine || "chatterbox")}</div>
+            <div><span className="text-gray-500">Idioma:</span> {String(config.lang || "pt")}</div>
+            {config.engine !== "chatterbox-vc" && (
+              <>
+                <div><span className="text-gray-500">cfg_weight:</span> {String(config.cfg_weight ?? 0.65)}</div>
+                <div><span className="text-gray-500">exaggeration:</span> {String(config.exaggeration ?? 0.5)}</div>
+                <div><span className="text-gray-500">temperature:</span> {String(config.temperature ?? 0.75)}</div>
+              </>
+            )}
+            {config.ref_audio && (
+              <div className="col-span-2"><span className="text-gray-500">Referência:</span> <span className="text-gray-300 break-all">{String(config.ref_audio).split("/").pop()}</span></div>
+            )}
+            <div><span className="text-gray-500">Device:</span> <span className={device === "cuda" ? "text-green-400" : "text-yellow-400"}>{device.toUpperCase()}</span></div>
           </div>
         )}
         {jobType === "dubbing" && (
