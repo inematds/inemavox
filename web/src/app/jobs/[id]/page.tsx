@@ -274,6 +274,7 @@ export default function JobDetail() {
             {jobType === "dubbing" && (
               <>
                 <span className="mx-2">|</span>{String(config.src_lang || "auto")} → {String(config.tgt_lang || "pt")}
+                {config.diarize && <><span className="mx-2">|</span><span className="text-purple-400">👥 Multi-falante</span></>}
               </>
             )}
             {jobType === "cutting" && (
@@ -744,6 +745,14 @@ export default function JobDetail() {
             {!!config.ollama_model && <div><span className="text-gray-500">Modelo Ollama:</span> {String(config.ollama_model)}</div>}
             <div><span className="text-gray-500">Sync:</span> {String(config.sync_mode || "smart")}</div>
             <div><span className="text-gray-500">Device:</span> <span className={device === "cuda" ? "text-green-400" : "text-yellow-400"}>{device.toUpperCase()}</span></div>
+            {config.diarize && (
+              <div className="col-span-2">
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                  👥 Multiplos Falantes
+                  {config.num_speakers ? ` · ${config.num_speakers} falantes` : " · auto"}
+                </span>
+              </div>
+            )}
           </div>
         )}
         {jobType === "cutting" && (

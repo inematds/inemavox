@@ -2,6 +2,22 @@
 
 ---
 
+## v1.8.2 — post-release fixes (2026-02-24)
+
+### Fix diarizacao (multiplos falantes)
+- `pyannote.audio 3.1.1` instalado no venv
+- Patches de compatibilidade para ecossistema atual:
+  - `torchaudio 2.10.0`: removeu `set_audio_backend` e `AudioMetaData` → shims adicionados
+  - `numpy 2.3.5`: removeu `np.NaN` → alias para `np.nan`
+  - `huggingface_hub 1.4.1`: removeu parametro `use_auth_token=` → arquivos do pyannote patcheados diretamente para usar `token=`
+- `start.sh`: carrega `.env` automaticamente; avisa se `HF_TOKEN` nao configurado
+- `.env.example`: template com instrucoes para configurar `HF_TOKEN`
+- **Requer aceite manual de termos** em `https://hf.co/pyannote/speaker-diarization-3.1` e `https://hf.co/pyannote/segmentation-3.0`
+- Badge `👥 Multi-falante` exibido no header e na secao de config do job detail
+- Job detail dublagem: mostra se diarizacao estava ativa e quantos falantes
+
+---
+
 ## v1.8.2 (2026-02-24)
 
 ### Novo

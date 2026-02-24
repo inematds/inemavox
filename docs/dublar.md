@@ -59,6 +59,41 @@ Com diarizacao ativa, o pipeline:
 - Atribui cada segmento ao seu falante
 - No Edge TTS, cada `SPEAKER_XX` recebe uma voz distinta automaticamente
 
+### Configuracao necessaria (primeira vez)
+
+A diarizacao usa o modelo `pyannote/speaker-diarization-3.1` do HuggingFace, que e **gated** (requer aceite de termos).
+
+**Passo a passo:**
+
+1. Crie uma conta gratuita em `https://huggingface.co`
+
+2. Aceite os termos do modelo:
+   - Acesse `https://huggingface.co/pyannote/speaker-diarization-3.1`
+   - Clique em **"Agree and access repository"**
+   - Aceite tambem o modelo de segmentacao: `https://huggingface.co/pyannote/segmentation-3.0`
+
+3. Gere um token de acesso:
+   - Acesse `https://huggingface.co/settings/tokens`
+   - Clique em **New token** → tipo **Read** → nome livre (ex: `inemavox`)
+   - Copie o token (`hf_...`)
+
+4. Configure no projeto:
+   ```bash
+   echo "HF_TOKEN=hf_SEU_TOKEN_AQUI" > .env
+   ```
+
+5. Reinicie o servidor (`./start.sh`) — o `.env` e carregado automaticamente
+
+Na **primeira execucao** com diarizacao, o modelo e baixado (~1GB) para `~/.cache/huggingface/`. As proximas execucoes usam o cache local.
+
+### Dependencias instaladas automaticamente
+
+- `pyannote.audio 3.1.1` — detecta e separa falantes
+- Patches de compatibilidade aplicados automaticamente para:
+  - `torchaudio >= 2.5` (APIs removidas)
+  - `numpy >= 2.0` (`np.NaN` removido)
+  - `huggingface_hub >= 1.0` (`use_auth_token` renomeado para `token`)
+
 ---
 
 ## Motores TTS
