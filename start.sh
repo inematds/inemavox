@@ -17,6 +17,11 @@ log() { echo -e "${GREEN}[INEMAVOX]${NC} $1"; }
 warn() { echo -e "${YELLOW}[INEMAVOX]${NC} $1"; }
 err() { echo -e "${RED}[INEMAVOX]${NC} $1"; }
 
+# Carregar variaveis de ambiente do .env se existir
+if [ -f "$DIR/.env" ]; then
+    set -a; source "$DIR/.env"; set +a
+fi
+
 cleanup() {
     log "Parando servicos..."
     [ -n "$API_PID" ] && kill "$API_PID" 2>/dev/null && log "Backend parado (PID $API_PID)"
@@ -114,6 +119,14 @@ echo ""
 
 # 7. Criar diretorio de jobs
 mkdir -p "$DIR/jobs"
+
+# 7.5 Verificar HF_TOKEN para diarizacao
+if [ -z "$HF_TOKEN" ]; then
+    warn "HF_TOKEN nao configurado — diarizacao de multiplos falantes desabilitada"
+    warn "  Configure em .env (veja .env.example) para ativar"
+else
+    log "HuggingFace Token: ${GREEN}configurado${NC} (diarizacao disponivel)"
+fi
 
 # 8. Iniciar Backend API
 log "Iniciando Backend API (porta 8010)..."

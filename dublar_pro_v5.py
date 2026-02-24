@@ -291,9 +291,35 @@ def check_xtts():
     except:
         return False
 
+def _patch_torchaudio_compat():
+    """Patches de compatibilidade: pyannote.audio com torchaudio >= 2.5 e numpy >= 2.0"""
+    try:
+        # numpy 2.0 removeu np.NaN (pyannote usa)
+        import numpy as np
+        if not hasattr(np, 'NaN'):
+            np.NaN = np.nan
+    except Exception:
+        pass
+    try:
+        # torchaudio 2.5+ removeu set_audio_backend e AudioMetaData
+        import torchaudio
+        if not hasattr(torchaudio, 'set_audio_backend'):
+            torchaudio.set_audio_backend = lambda x: None
+        if not hasattr(torchaudio, 'AudioMetaData'):
+            class _AudioMetaData:
+                sample_rate: int = 0
+                num_frames: int = 0
+                num_channels: int = 0
+                bits_per_sample: int = 0
+                encoding: str = ""
+            torchaudio.AudioMetaData = _AudioMetaData
+    except Exception:
+        pass
+
 def check_pyannote():
     """Verifica se pyannote esta disponivel"""
     try:
+        _patch_torchaudio_compat()
         from pyannote.audio import Pipeline
         return True
     except:
@@ -476,11 +502,12 @@ def diarize_audio(wav_path, workdir, num_speakers=None):
     print("="*60)
 
     if not check_pyannote():
-        print("[WARN] pyannote nao instalado. Usando falante unico.")
-        print("[INFO] Para instalar: pip install pyannote.audio")
+        print("[ERRO] pyannote.audio nao esta disponivel (incompatibilidade de dependencias).")
+        print("[INFO] Continuando com falante unico (voz padrao para todos os segmentos).")
         return None
 
     try:
+        _patch_torchaudio_compat()
         from pyannote.audio import Pipeline
         import torch
 
@@ -493,9 +520,12 @@ def diarize_audio(wav_path, workdir, num_speakers=None):
                 use_auth_token=hf_token
             )
         else:
-            # Tentar modelo sem autenticacao
-            print("[WARN] HF_TOKEN nao definido. Usando modelo basico.")
-            pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization")
+            print("[ERRO] HF_TOKEN nao definido.")
+            print("[INFO] Para usar diarizacao:")
+            print("[INFO]   1. Aceite os termos em https://hf.co/pyannote/speaker-diarization-3.1")
+            print("[INFO]   2. Crie token em https://hf.co/settings/tokens")
+            print("[INFO]   3. Adicione HF_TOKEN=hf_xxx no arquivo .env do projeto")
+            return None
 
         device = get_device()
         if device == "cuda":
