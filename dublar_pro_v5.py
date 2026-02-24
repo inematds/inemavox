@@ -517,7 +517,7 @@ def diarize_audio(wav_path, workdir, num_speakers=None):
         if hf_token:
             pipeline = Pipeline.from_pretrained(
                 "pyannote/speaker-diarization-3.1",
-                use_auth_token=hf_token
+                token=hf_token
             )
         else:
             print("[ERRO] HF_TOKEN nao definido.")
