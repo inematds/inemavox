@@ -1,6 +1,6 @@
-# Cortar Video
+# inemaVOX - Cortar Video
 
-Extrai clips de um video por timestamps manuais ou deixa a IA identificar automaticamente os melhores momentos para viralizar. Ideal para criar highlights, recortes de podcasts, shorts e reels.
+Extrai clips de um video por timestamps manuais ou deixa a IA identificar automaticamente os melhores momentos. Suporta dois modos de analise por IA: **Viral** (momentos mais envolventes) e **Por Assunto** (segmentacao por topico).
 
 ---
 
@@ -18,7 +18,7 @@ ffmpeg recorta cada segmento sem reencoding (rapido)
 clip_01.mp4, clip_02.mp4, ..., clips.zip
 ```
 
-### Modo Viral (IA)
+### Modo Analise (IA)
 
 ```
 Video
@@ -28,7 +28,8 @@ Video
 2. Extrair audio      → ffmpeg
 3. Transcrever        → Whisper large-v3
 4. Analisar com LLM   → Ollama / OpenAI / Anthropic / Groq...
-   (LLM recebe a transcricao completa e decide quais trechos sao mais envolventes)
+   (Viral: detecta melhores momentos para viralizar)
+   (Assunto: identifica mudancas de topico e agrupa)
 5. Recortar clips     → ffmpeg
 6. Empacotar          → clips.zip
    │
@@ -40,8 +41,8 @@ clip_01.mp4 ... clip_N.mp4 + clips.zip
 
 ## Interface Web (`/cut`)
 
-1. Acesse `http://localhost:3000/cut`
-2. Cole a URL do video **ou** arraste um arquivo local
+1. Acesse `http://localhost:3010/cut`
+2. Cole a URL do video **ou** envie um arquivo local
 3. Escolha o modo:
 
 ### Modo Manual
@@ -49,10 +50,14 @@ clip_01.mp4 ... clip_N.mp4 + clips.zip
 - Exemplos: `00:30-02:15, 05:00-07:30, 10:00-12:45`
 - Formatos aceitos: `SS`, `MM:SS`, `HH:MM:SS`
 
-### Modo Viral (IA)
-- Escolha o provider LLM e o modelo
-- Configure o numero de clips e duracao minima/maxima
-- O LLM analisa a transcricao e retorna os melhores momentos com titulo e descricao
+### Modo Analise (IA)
+- Escolha o sub-modo: **Viral** ou **Assunto**
+  - **Viral**: LLM identifica os N melhores momentos para engajamento (shorts, reels)
+  - **Assunto**: LLM segmenta o video por topico (lives longas, podcasts, aulas)
+- Configure o LLM provider e modelo
+- No modo Viral: configure numero de clips e duracao min/max
+- No modo Assunto: numero de clips e 0 significa automatico
+- Prompts customizaveis (system + user) com botao "Restaurar padrao"
 
 4. Clique em **Cortar** e acompanhe o progresso
 5. Ao concluir, assista cada clip no player inline e faca download individual ou em ZIP
@@ -69,13 +74,6 @@ python clipar_v1.py \
   --mode manual \
   --timestamps "00:30-02:15, 05:00-07:30"
 
-# Modo manual com URL
-python clipar_v1.py \
-  --in "https://www.youtube.com/watch?v=VIDEO_ID" \
-  --outdir ./clips \
-  --mode manual \
-  --timestamps "01:00-03:30, 10:15-12:00"
-
 # Modo viral com Ollama local
 python clipar_v1.py \
   --in video.mp4 \
@@ -86,26 +84,22 @@ python clipar_v1.py \
   --min-duration 30 \
   --max-duration 90
 
-# Modo viral com OpenAI
+# Modo por assunto (segmentacao de topicos)
 python clipar_v1.py \
-  --in video.mp4 \
+  --in podcast.mp4 \
   --outdir ./clips \
-  --mode viral \
-  --llm-provider openai \
-  --llm-model gpt-4o \
-  --llm-api-key sk-... \
-  --num-clips 3
+  --mode topics \
+  --ollama-model qwen2.5:14b
 
 # Modo viral com Groq (rapido e gratuito)
 python clipar_v1.py \
-  --in podcast.mp4 \
+  --in video.mp4 \
   --outdir ./clips \
   --mode viral \
   --llm-provider groq \
   --llm-model llama-3.3-70b-versatile \
   --llm-api-key gsk_... \
-  --num-clips 5 \
-  --whisper-model large-v3
+  --num-clips 5
 ```
 
 ### Parametros
@@ -114,43 +108,20 @@ python clipar_v1.py \
 |-----------|-----------|--------|---------|
 | `--in` | Video ou URL | arquivo local, URL YouTube/TikTok/etc | obrigatorio |
 | `--outdir` | Diretorio de saida | qualquer path | obrigatorio |
-| `--mode` | Modo de corte | `manual`, `viral` | `manual` |
+| `--mode` | Modo de corte | `manual`, `viral`, `topics` | `manual` |
 | `--timestamps` | Timestamps (modo manual) | `"HH:MM:SS-HH:MM:SS, ..."` | — |
-| `--num-clips` | Numero de clips (modo viral) | inteiro | `5` |
+| `--num-clips` | Numero de clips (IA) | inteiro, 0=auto | `5` |
 | `--min-duration` | Duracao minima em segundos | inteiro | `30` |
 | `--max-duration` | Duracao maxima em segundos | inteiro | `120` |
-| `--ollama-model` | Modelo Ollama para analise | `qwen2.5:7b`, `llama3.1:8b`... | `qwen2.5:7b` |
-| `--llm-provider` | Provider externo | `ollama`, `openai`, `anthropic`, `groq`, `deepseek`, `together`, `openrouter`, `custom` | `ollama` |
-| `--llm-model` | Modelo do provider externo | ex: `gpt-4o`, `claude-3-5-sonnet` | — |
+| `--ollama-model` | Modelo Ollama | `qwen2.5:7b`, `qwen2.5:14b`... | `qwen2.5:7b` |
+| `--llm-provider` | Provider externo | `ollama`, `openai`, `anthropic`, `groq`, `deepseek`, `openrouter` | `ollama` |
+| `--llm-model` | Modelo do provider | ex: `gpt-4o`, `claude-3-5-sonnet` | — |
 | `--llm-api-key` | API key do provider | string | — |
-| `--llm-base-url` | URL base (provider custom) | URL | — |
-| `--whisper-model` | Modelo Whisper para transcricao | `tiny`, `small`, `medium`, `large-v3` | `large-v3` |
+| `--whisper-model` | Modelo Whisper | `tiny`, `small`, `medium`, `large-v3` | `large-v3` |
 
 ---
 
-## Formato de Timestamps
-
-O parser aceita varios formatos e separadores:
-
-```
-# Formato MM:SS
-00:30-02:15, 05:00-07:30
-
-# Formato HH:MM:SS
-01:00:00-01:05:30, 01:30:00-01:35:00
-
-# Formato misto
-30-135, 05:00-07:30, 01:00:00-01:05:00
-
-# Separadores aceitos: virgula, ponto-e-virgula, nova linha
-00:30-02:15; 05:00-07:30
-00:30-02:15
-05:00-07:30
-```
-
----
-
-## Providers LLM (Modo Viral)
+## Providers LLM
 
 | Provider | Parametro | Notas |
 |----------|-----------|-------|
@@ -159,37 +130,16 @@ O parser aceita varios formatos e separadores:
 | Anthropic | `anthropic` | `claude-3-5-sonnet-20241022` |
 | Groq | `groq` | Rapido, tier gratuito disponivel |
 | DeepSeek | `deepseek` | Custo muito baixo |
-| Together | `together` | Vários modelos open-source |
 | OpenRouter | `openrouter` | Acesso a muitos providers |
 | Custom | `custom` | Qualquer API OpenAI-compativel com `--llm-base-url` |
-
----
-
-## Saida
-
-```
-outdir/
-├── clip_01.mp4    # Primeiro clip
-├── clip_02.mp4    # Segundo clip
-├── ...
-├── clip_N.mp4
-└── clips.zip      # Todos os clips em um ZIP
-```
-
-No modo viral, cada clip tem:
-- **Titulo** gerado pelo LLM
-- **Descricao** do momento (por que e relevante)
-- **Timecodes** (inicio e fim)
-
-Esses metadados aparecem na interface no job detail (`/jobs/{id}`).
 
 ---
 
 ## Via API
 
 ```bash
-# Corte manual por URL
-curl -X POST http://localhost:8000/api/jobs/cut \
+# Corte manual
+curl -X POST http://localhost:8010/api/jobs/cut \
   -H "Content-Type: application/json" \
   -d '{
     "input": "https://www.youtube.com/watch?v=VIDEO_ID",
@@ -198,7 +148,7 @@ curl -X POST http://localhost:8000/api/jobs/cut \
   }'
 
 # Corte viral com Ollama
-curl -X POST http://localhost:8000/api/jobs/cut \
+curl -X POST http://localhost:8010/api/jobs/cut \
   -H "Content-Type: application/json" \
   -d '{
     "input": "https://www.youtube.com/watch?v=VIDEO_ID",
@@ -206,32 +156,32 @@ curl -X POST http://localhost:8000/api/jobs/cut \
     "ollama_model": "qwen2.5:7b",
     "num_clips": 5,
     "min_duration": 30,
-    "max_duration": 90,
-    "whisper_model": "large-v3"
+    "max_duration": 90
   }'
 
-# Corte com upload de arquivo
-curl -X POST http://localhost:8000/api/jobs/cut/upload \
-  -F "file=@video.mp4" \
-  -F 'config_json={"mode":"manual","timestamps":"00:30-02:15"}'
+# Corte por assunto
+curl -X POST http://localhost:8010/api/jobs/cut \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "https://www.youtube.com/watch?v=VIDEO_ID",
+    "mode": "topics",
+    "ollama_model": "qwen2.5:14b",
+    "num_clips": 0
+  }'
 
 # Listar clips gerados
-curl http://localhost:8000/api/jobs/{JOB_ID}/clips
+curl http://localhost:8010/api/jobs/{JOB_ID}/clips
 
-# Download de clip individual
-curl http://localhost:8000/api/jobs/{JOB_ID}/clips/clip_01.mp4 -o clip_01.mp4
-
-# Download de todos em ZIP
-curl http://localhost:8000/api/jobs/{JOB_ID}/clips/zip -o clips.zip
+# Download ZIP
+curl http://localhost:8010/api/jobs/{JOB_ID}/clips/zip -o clips.zip
 ```
 
 ---
 
 ## Dicas
 
-- No modo manual, o recorte e feito sem reencoding (copia de stream) — muito rapido independente da duracao do video
-- No modo viral, a qualidade dos clips depende do LLM escolhido; modelos maiores identificam melhores momentos
-- Para podcasts longos, use `--min-duration 60 --max-duration 180` para clips mais substanciais
-- Para Shorts/Reels, use `--max-duration 60` para manter os clips dentro do limite de 1 minuto
-- Groq com `llama-3.3-70b-versatile` oferece excelente qualidade com tier gratuito generoso
-- Se o Ollama nao estiver rodando, inicie com `ollama serve` antes de criar o job
+- No modo manual o recorte e sem reencoding — muito rapido
+- **Viral**: ideal para Shorts/Reels, use `max_duration 60`
+- **Assunto**: ideal para lives longas e podcasts; use `num_clips 0` para detectar automaticamente
+- Groq com `llama-3.3-70b-versatile` oferece excelente qualidade com tier gratuito
+- Os prompts customizaveis permitem ajustar o criterio de selecao sem alterar o codigo
