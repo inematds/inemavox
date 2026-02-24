@@ -67,10 +67,11 @@ A diarizacao usa o modelo `pyannote/speaker-diarization-3.1` do HuggingFace, que
 
 1. Crie uma conta gratuita em `https://huggingface.co`
 
-2. Aceite os termos do modelo:
-   - Acesse `https://huggingface.co/pyannote/speaker-diarization-3.1`
-   - Clique em **"Agree and access repository"**
-   - Aceite tambem o modelo de segmentacao: `https://huggingface.co/pyannote/segmentation-3.0`
+2. Aceite os termos dos **dois** modelos (ambos sao obrigatorios):
+   - `https://huggingface.co/pyannote/speaker-diarization-3.1` → clique em **"Agree and access repository"**
+   - `https://huggingface.co/pyannote/segmentation-3.0` → clique em **"Agree and access repository"**
+
+   > **Atencao:** aceitar apenas um dos modelos causa erro na primeira execucao.
 
 3. Gere um token de acesso:
    - Acesse `https://huggingface.co/settings/tokens`
