@@ -6,7 +6,7 @@ Traduz e dubla automaticamente qualquer video usando IA local. O pipeline cobre 
 
 ## Como funciona
 
-O pipeline executa **10 etapas** dentro de um container Docker com GPU:
+O pipeline executa **10 etapas**:
 
 ```
 Video/URL
@@ -17,7 +17,7 @@ Video/URL
 3. Transcrever (ASR) → Whisper large-v3 / Parakeet 1.1B
 4. Traduzir          → M2M100 (offline) / Ollama (LLM local)
 5. Dividir segmentos → ffmpeg
-6. Sintetizar voz    → Edge TTS / Bark / XTTS / Piper
+6. Sintetizar voz    → Edge TTS / Chatterbox / Bark / Piper
 7. Sincronizar       → rubberband (stretch/compress por segmento)
 8. Concatenar        → ffmpeg
 9. Pos-processar     → normalizacao de volume, filtros
@@ -31,87 +31,46 @@ video_dublado.mp4
 
 ## Interface Web (`/new`)
 
-1. Acesse `http://localhost:3000/new`
-2. Cole a URL do video **ou** arraste um arquivo local
+1. Acesse `http://localhost:3010/new`
+2. Cole a URL do video **ou** envie um arquivo local
 3. Configure os parametros:
    - **Idioma de origem**: auto-detect ou especifique (ex: `en`, `es`, `ja`)
    - **Idioma de destino**: ex: `pt` para Portugues Brasileiro
+   - **Tipo de conteudo**: palestra, podcast, filme, etc (aplica presets automaticamente)
    - **Motor TTS**: veja tabela abaixo
    - **Motor de traducao**: M2M100 (rapido, offline) ou Ollama (melhor qualidade)
-   - **Modelo Whisper**: recomendado `large-v3` para maxima qualidade
-4. Clique em **Dublar** e acompanhe o progresso etapa por etapa
+   - **Modelo Whisper/Parakeet**: recomendado `large-v3` para maxima qualidade
+   - **Multiplos Falantes**: ativa diarizacao (entrevistas, podcasts, debates)
+4. Clique em **Iniciar Dublagem** e acompanhe o progresso etapa por etapa
+5. Para re-tentar um job, clique em **↺ Re-tentar** — abre o formulario pre-preenchido para ajustar a configuracao antes de reenviar
 
 ---
 
-## CLI (`dublar_pro_v5.py`)
+## Multiplos Falantes (Diarizacao)
 
-```bash
-# Dublar video do YouTube para Portugues
-python dublar_pro_v5.py \
-  --in "https://www.youtube.com/watch?v=VIDEO_ID" \
-  --tgt pt \
-  --tts edge \
-  --tradutor m2m100 \
-  --whisper-model large-v3
+Para videos com mais de uma pessoa falando (podcasts, entrevistas, debates):
 
-# Dublar arquivo local com Bark (GPU, alta qualidade)
-python dublar_pro_v5.py \
-  --in video.mp4 \
-  --tgt pt \
-  --tts bark \
-  --tradutor ollama \
-  --modelo qwen2.5:14b \
-  --outdir ./resultado
+1. Marque a opcao **Multiplos Falantes** no formulario
+2. Opcionalmente informe o **numero de falantes** (deixe vazio para detectar automaticamente)
+3. Use **Edge TTS** como motor de voz — e o unico que atribui vozes diferentes por falante
 
-# Clonar voz original (XTTS)
-python dublar_pro_v5.py \
-  --in video.mp4 \
-  --tgt pt \
-  --tts xtts \
-  --clonar-voz \
-  --outdir ./resultado
-
-# Com diarizacao (multiplos falantes)
-python dublar_pro_v5.py \
-  --in podcast.mp4 \
-  --tgt pt \
-  --tts edge \
-  --diarize \
-  --outdir ./resultado
-```
-
-### Parametros
-
-| Parametro | Descricao | Opcoes | Default |
-|-----------|-----------|--------|---------|
-| `--in` | Video ou URL | arquivo local, URL YouTube/TikTok/etc | obrigatorio |
-| `--tgt` | Idioma destino | `pt`, `en`, `es`, `fr`, `de`, `ja`, `zh`... | obrigatorio |
-| `--src` | Idioma origem | `auto`, `en`, `es`, `ja`... | `auto` |
-| `--tts` | Motor de voz | `edge`, `bark`, `xtts`, `piper` | `edge` |
-| `--voice` | Voz especifica | ex: `pt-BR-FranciscaNeural` | auto |
-| `--tradutor` | Motor de traducao | `m2m100`, `ollama` | `m2m100` |
-| `--modelo` | Modelo Ollama | `qwen2.5:14b`, `llama3.1:8b`... | `qwen2.5:14b` |
-| `--asr` | Motor de transcricao | `whisper`, `parakeet` | `whisper` |
-| `--whisper-model` | Tamanho do Whisper | `tiny`, `small`, `medium`, `large`, `large-v3` | `large-v3` |
-| `--sync` | Modo de sincronizacao | `none`, `fit`, `pad`, `smart`, `extend` | `smart` |
-| `--maxstretch` | Fator maximo de stretch | `1.0` a `2.0` | `1.3` |
-| `--diarize` | Detectar multiplos falantes | flag (sem valor) | desativado |
-| `--clonar-voz` | Clonar voz original (XTTS) | flag (sem valor) | desativado |
-| `--outdir` | Diretorio de saida | qualquer path | `./dublado` |
-| `--seed` | Seed para reproducibilidade | inteiro | `42` |
+Com diarizacao ativa, o pipeline:
+- Detecta automaticamente os falantes usando **pyannote**
+- Atribui cada segmento ao seu falante
+- No Edge TTS, cada `SPEAKER_XX` recebe uma voz distinta automaticamente
 
 ---
 
 ## Motores TTS
 
-| Motor | GPU | Internet | Qualidade | Velocidade | Notas |
-|-------|-----|----------|-----------|------------|-------|
-| **Edge TTS** | Nao | Sim | Boa | Muito rapido | Microsoft neural voices; requer conexao |
-| **Bark** | Sim | Nao | Alta | Rapido (GPU) | Expressivo, suporta emocoes |
-| **XTTS** | Sim | Nao | Alta + clone | Medio | Clona a voz do falante original |
-| **Piper** | Nao | Nao | Media | Muito rapido | Leve, ideal para CPU |
+| Motor | GPU | Internet | Multi-voz | Qualidade | Notas |
+|-------|-----|----------|-----------|-----------|-------|
+| **Edge TTS** | Nao | Sim | Sim | Boa | Microsoft neural voices; suporta multi-falante |
+| **Chatterbox** | Sim | Nao | Nao | Alta | Melhor qualidade local; suporta clone de voz |
+| **Bark** | Sim | Nao | Nao | Alta | Expressivo, suporta emocoes |
+| **Piper** | Nao | Nao | Nao | Media | Leve, ideal para CPU |
 
-### Vozes Edge TTS disponiveis (exemplos)
+### Vozes Edge TTS (exemplos)
 
 | Idioma | Vozes |
 |--------|-------|
@@ -149,10 +108,12 @@ python dublar_pro_v5.py \
 ## Saida
 
 ```
-outdir/
-├── video_dublado.mp4     # Video final com audio dublado
-├── subs_original.srt     # Legendas no idioma original
-└── subs_traduzido.srt    # Legendas traduzidas
+jobs/{id}/
+├── dublado/
+│   └── video_dublado.mp4     # Video final com audio dublado
+└── dub_work/
+    ├── asr.srt               # Legendas no idioma original
+    └── asr_trad.srt          # Legendas traduzidas
 ```
 
 O resultado fica disponivel no job detail (`/jobs/{id}`) com:
@@ -166,7 +127,7 @@ O resultado fica disponivel no job detail (`/jobs/{id}`) com:
 
 ```bash
 # Dublar por URL
-curl -X POST http://localhost:8000/api/jobs \
+curl -X POST http://localhost:8010/api/jobs \
   -H "Content-Type: application/json" \
   -d '{
     "input": "https://www.youtube.com/watch?v=VIDEO_ID",
@@ -177,8 +138,19 @@ curl -X POST http://localhost:8000/api/jobs \
     "sync_mode": "smart"
   }'
 
+# Dublar com multiplos falantes
+curl -X POST http://localhost:8010/api/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "https://www.youtube.com/watch?v=VIDEO_ID",
+    "tgt_lang": "pt",
+    "tts_engine": "edge",
+    "diarize": true,
+    "num_speakers": 2
+  }'
+
 # Dublar com upload de arquivo
-curl -X POST http://localhost:8000/api/jobs/upload \
+curl -X POST http://localhost:8010/api/jobs/upload \
   -F "file=@video.mp4" \
   -F 'config_json={"tgt_lang":"pt","tts_engine":"edge","translation_engine":"m2m100"}'
 ```
@@ -188,7 +160,8 @@ curl -X POST http://localhost:8000/api/jobs/upload \
 ## Dicas
 
 - Use `large-v3` para idiomas com sotaque forte ou audio com ruido
-- Para videos com multiplos falantes, ative `--diarize`
-- Se o audio dublado ficar fora de sincronia, tente `--sync fit` ou reduza `--maxstretch 1.1`
+- Para videos com multiplos falantes, ative **Multiplos Falantes** + Edge TTS
+- Se o audio dublado ficar fora de sincronia, tente sync `fit` ou reduza maxstretch para `1.1`
 - M2M100 e totalmente offline; Ollama requer o servico rodando em `localhost:11434`
 - Parakeet so funciona com audio em ingles; use Whisper para outros idiomas
+- Chatterbox oferece a melhor qualidade local com suporte a clone de voz

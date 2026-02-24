@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { getOptions, createJob, createJobWithUpload, getOllamaStatus, startOllama, stopOllama, pullOllamaModel } from "@/lib/api";
 
 type Options = {
@@ -87,8 +87,17 @@ function DetailCard({
   );
 }
 
-export default function NewJob() {
+export default function NewJobPage() {
+  return (
+    <Suspense>
+      <NewJob />
+    </Suspense>
+  );
+}
+
+function NewJob() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [options, setOptions] = useState<Options | null>(null);
   const [loading, setLoading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
@@ -109,6 +118,7 @@ export default function NewJob() {
   const [ollamaModel, setOllamaModel] = useState("qwen2.5:14b");
   const [largeModel, setLargeModel] = useState(false);
   const [diarize, setDiarize] = useState(false);
+  const [numSpeakers, setNumSpeakers] = useState<number | "">("");
   const [noTruncate, setNoTruncate] = useState(false);
   const [cloneVoice, setCloneVoice] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -141,6 +151,35 @@ export default function NewJob() {
 
   useEffect(() => {
     getOptions().then(setOptions).catch(() => setError("API offline"));
+  }, []);
+
+  // Pre-preencher a partir de ?prefill= (retry de job existente)
+  useEffect(() => {
+    const raw = searchParams.get("prefill");
+    if (!raw) return;
+    try {
+      const cfg = JSON.parse(decodeURIComponent(raw)) as Record<string, unknown>;
+      if (cfg.input && typeof cfg.input === "string") setInput(cfg.input);
+      if (cfg.src_lang) setSrcLang(String(cfg.src_lang));
+      if (cfg.tgt_lang) setTgtLang(String(cfg.tgt_lang));
+      if (cfg.content_type) setContentType(String(cfg.content_type));
+      if (cfg.tts_engine) setTtsEngine(String(cfg.tts_engine));
+      if (cfg.voice) setVoice(String(cfg.voice));
+      if (cfg.asr_engine) setAsrEngine(String(cfg.asr_engine));
+      if (cfg.whisper_model) setWhisperModel(String(cfg.whisper_model));
+      if (cfg.parakeet_model) setParakeetModel(String(cfg.parakeet_model));
+      if (cfg.translation_engine) setTranslationEngine(String(cfg.translation_engine));
+      if (cfg.ollama_model) setOllamaModel(String(cfg.ollama_model));
+      if (cfg.large_model) setLargeModel(Boolean(cfg.large_model));
+      if (cfg.diarize) setDiarize(Boolean(cfg.diarize));
+      if (cfg.num_speakers) setNumSpeakers(Number(cfg.num_speakers));
+      if (cfg.no_truncate) setNoTruncate(Boolean(cfg.no_truncate));
+      if (cfg.clone_voice) setCloneVoice(Boolean(cfg.clone_voice));
+      if (cfg.sync_mode) setSyncMode(String(cfg.sync_mode));
+      if (cfg.maxstretch) setMaxstretch(Number(cfg.maxstretch));
+      if (cfg.seed) setSeed(Number(cfg.seed));
+    } catch { /* ignorar parse errors */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Verificar status do Ollama quando motor de traducao for ollama
@@ -214,6 +253,7 @@ export default function NewJob() {
       if (translationEngine === "ollama") config.ollama_model = ollamaModel;
       if (largeModel) config.large_model = true;
       if (diarize) config.diarize = true;
+      if (diarize && numSpeakers) config.num_speakers = Number(numSpeakers);
       if (noTruncate) config.no_truncate = true;
       if (cloneVoice) config.clone_voice = true;
       if (tolerance !== undefined) config.tolerance = Number(tolerance);
@@ -237,6 +277,12 @@ export default function NewJob() {
     <div className="max-w-3xl mx-auto">
       <h1 className="text-3xl font-bold mb-2">Nova Dublagem</h1>
       <p className="text-gray-400 mb-8">Configure o pipeline de dublagem do seu video</p>
+
+      {searchParams.get("prefill") && (
+        <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4 mb-6 text-blue-300 text-sm">
+          Configuracao carregada do job anterior. Altere o que quiser antes de reenviar.
+        </div>
+      )}
 
       {error && (
         <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4 mb-6 text-red-400">{error}</div>
@@ -675,6 +721,56 @@ export default function NewJob() {
           )}
         </section>
 
+        {/* Multiplos Falantes */}
+        <section className="border border-gray-800 rounded-lg p-5">
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={diarize}
+              onChange={(e) => { setDiarize(e.target.checked); if (!e.target.checked) setNumSpeakers(""); }}
+              className="w-4 h-4"
+            />
+            <div>
+              <div className="font-medium">Multiplos Falantes</div>
+              <div className="text-sm text-gray-400">Detecta e separa vozes diferentes no video (entrevistas, podcasts, debates)</div>
+            </div>
+          </label>
+
+          {diarize && (
+            <div className="mt-4 pl-7 space-y-3">
+              <div className="flex items-center gap-4">
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">Numero de falantes</label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min="2"
+                      max="10"
+                      value={numSpeakers}
+                      onChange={(e) => setNumSpeakers(e.target.value === "" ? "" : Number(e.target.value))}
+                      placeholder="Auto"
+                      className="w-24 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white placeholder-gray-600"
+                    />
+                    <span className="text-sm text-gray-500">Deixe vazio para detectar automaticamente</span>
+                  </div>
+                </div>
+              </div>
+
+              {ttsEngine !== "edge" && (
+                <div className="text-sm text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3">
+                  O motor TTS selecionado ({ttsEngine}) nao suporta vozes distintas por falante. Use <strong>Edge TTS</strong> para que cada pessoa receba uma voz diferente na dublagem.
+                </div>
+              )}
+
+              {ttsEngine === "edge" && (
+                <div className="text-sm text-purple-300 bg-purple-500/10 border border-purple-500/30 rounded-lg p-3">
+                  Cada falante detectado recebera automaticamente uma voz diferente do Edge TTS.
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+
         {/* Opcoes Avancadas */}
         <section className="border border-gray-800 rounded-lg p-5">
           <button type="button" onClick={() => setShowAdvanced(!showAdvanced)}
@@ -752,26 +848,6 @@ export default function NewJob() {
                 {expandedHelp === "noTruncate" && (
                   <div className="mt-2 text-xs p-2 rounded bg-gray-800/50 text-gray-400">
                     {ADVANCED_HELP.noTruncate}
-                  </div>
-                )}
-              </div>
-
-              {/* Diarize */}
-              <div>
-                <div className="flex items-center gap-2">
-                  <label className="flex items-center gap-2 text-sm">
-                    <input type="checkbox" checked={diarize} onChange={(e) => setDiarize(e.target.checked)} />
-                    Detectar multiplos falantes (diarizacao)
-                  </label>
-                  <button type="button"
-                    onClick={() => setExpandedHelp(expandedHelp === "diarize" ? null : "diarize")}
-                    className="w-4 h-4 rounded-full border border-gray-500 text-gray-400 hover:text-white hover:border-gray-300 text-[10px] leading-4 text-center">
-                    i
-                  </button>
-                </div>
-                {expandedHelp === "diarize" && (
-                  <div className="mt-2 text-xs p-2 rounded bg-gray-800/50 text-gray-400">
-                    {ADVANCED_HELP.diarize}
                   </div>
                 )}
               </div>

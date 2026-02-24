@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef, useCallback } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import {
   getJob, getJobLogs, cancelJob, deleteJob, retryJob,
   getDownloadUrl, getSubtitlesUrl,
@@ -43,14 +43,69 @@ function formatTimecode(seconds: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+type StageDevice = { label: string; color: string };
+
+function getStageDevice(stageId: string, config: Record<string, unknown>, jobDevice: string): StageDevice | null {
+  const tts = String(config.tts_engine || "edge");
+  const asr = String(config.asr_engine || "whisper");
+  const trans = String(config.translation_engine || "m2m100");
+
+  switch (stageId) {
+    case "download":
+    case "extraction":
+    case "split":
+    case "sync":
+    case "concat":
+    case "postprocess":
+    case "mux":
+      return { label: "CPU", color: "text-yellow-500" };
+
+    case "transcription":
+      if (asr === "parakeet")
+        return { label: "GPU", color: "text-green-400" };
+      // Whisper via CTranslate2 — sempre CPU (sem CUDA no CT2)
+      return { label: "CPU", color: "text-yellow-500" };
+
+    case "translation":
+      if (trans === "ollama")
+        return { label: "Ollama", color: "text-purple-400" };
+      if (trans === "deepl" || trans === "google" || trans === "microsoft")
+        return { label: "Online", color: "text-blue-400" };
+      // m2m100 — torch local, device do job
+      return jobDevice === "cuda"
+        ? { label: "GPU · m2m100", color: "text-green-400" }
+        : { label: "CPU · m2m100", color: "text-yellow-500" };
+
+    case "tts":
+      if (tts === "edge") return { label: "Online", color: "text-blue-400" };
+      if (tts === "chatterbox") return { label: "GPU", color: "text-green-400" };
+      if (tts === "bark") return { label: "GPU", color: "text-green-400" };
+      if (tts === "piper") return { label: "CPU", color: "text-yellow-500" };
+      return null;
+
+    default:
+      return null;
+  }
+}
+
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
+const JOB_TYPE_ROUTES: Record<string, string> = {
+  dubbing: "/new",
+  cutting: "/cut",
+  transcription: "/transcribe",
+  tts_generate: "/tts",
+  voice_clone: "/voice-clone",
+  download: "/download",
+};
+
 export default function JobDetail() {
   const params = useParams();
+  const router = useRouter();
   const jobId = String(params.id);
   const [job, setJob] = useState<JobData | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -60,7 +115,6 @@ export default function JobDetail() {
   const [error, setError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [retrying, setRetrying] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -142,15 +196,12 @@ export default function JobDetail() {
     }
   };
 
-  const handleRetry = async () => {
-    setRetrying(true);
-    try {
-      const newJob = await retryJob(jobId) as Record<string, unknown>;
-      window.location.href = `/jobs/${newJob.id}`;
-    } catch {
-      setError("Erro ao re-tentar job");
-      setRetrying(false);
-    }
+  const handleRetry = () => {
+    const cfg = (job?.config || {}) as Record<string, unknown>;
+    const jt = String(cfg.job_type || "dubbing");
+    const route = JOB_TYPE_ROUTES[jt] || "/new";
+    const prefill = encodeURIComponent(JSON.stringify(cfg));
+    router.push(`${route}?prefill=${prefill}`);
   };
 
   if (!job && !error) {
@@ -262,9 +313,9 @@ export default function JobDetail() {
             </button>
           )}
           {(status === "failed" || status === "cancelled") && (
-            <button onClick={handleRetry} disabled={retrying}
-              className="bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/40 text-blue-400 px-4 py-2 rounded-lg text-sm transition-colors disabled:opacity-50">
-              {retrying ? "Iniciando..." : "↺ Re-tentar"}
+            <button onClick={handleRetry}
+              className="bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/40 text-blue-400 px-4 py-2 rounded-lg text-sm transition-colors">
+              ↺ Re-tentar
             </button>
           )}
           {!isActive && (
@@ -326,8 +377,14 @@ export default function JobDetail() {
                   {/* Step number + name */}
                   <div className="w-6 text-center text-gray-500 font-mono text-xs">{stage.num}</div>
                   <div className={`flex-1 ${isRunning ? "text-white font-medium" : isDone ? "text-gray-400" : "text-gray-600"}`}>
-                    {stage.name}
+                    <span>{stage.name}</span>
                     {stage.tool && <span className="text-xs text-gray-500 ml-2">{stage.tool}</span>}
+                    {jobType === "dubbing" && (() => {
+                      const sd = getStageDevice(stage.id, config, device);
+                      return sd ? (
+                        <span className={`ml-2 text-xs font-mono ${sd.color} opacity-70`}>[{sd.label}]</span>
+                      ) : null;
+                    })()}
                     {isRunning && !stage.log_progress && <span className="ml-2 inline-block animate-pulse">●</span>}
                     {/* Download/tool progress */}
                     {isRunning && stage.log_progress && (
