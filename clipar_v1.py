@@ -10,7 +10,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-# Prompts padrão para análise viral
+# Prompts padrão — viral
 DEFAULT_SYSTEM_PROMPT = (
     "You are an expert video editor and social media strategist specializing in "
     "viral short-form content. Your goal is to identify the most engaging, "
@@ -28,6 +28,28 @@ DEFAULT_USER_PROMPT = (
     "Respond ONLY with a valid JSON array (no extra text, no markdown):\n"
     '[\n  {{"start": 10.5, "end": 75.2, "reason": "Strong hook about..."}},\n'
     '  {{"start": 120.0, "end": 195.0, "reason": "Viral moment: ..."}}\n]'
+)
+
+# Prompts padrão — topics (por assunto, sem limite de duracao)
+DEFAULT_TOPICS_SYSTEM_PROMPT = (
+    "You are an expert content analyst specializing in segmenting video content by topic. "
+    "Your goal is to identify distinct subjects discussed and group all related content "
+    "into coherent clips, one clip per topic."
+)
+
+DEFAULT_TOPICS_USER_PROMPT = (
+    "Analyze this video transcript and identify all distinct topics or subjects discussed.\n\n"
+    "Requirements:\n"
+    "- Each clip must cover ONE complete topic or subject area from start to finish\n"
+    "- Group ALL consecutive content about the same topic into a single clip\n"
+    "- When the speaker switches to a new subject, start a new clip\n"
+    "- Clips can be ANY duration — short or long, do NOT split clips to meet a time limit\n"
+    "- Find at most {num_clips} distinct topics (find fewer if there are fewer distinct subjects)\n"
+    "- Clips must be contiguous and not overlap\n\n"
+    "Transcript:\n{transcript}\n\n"
+    "Respond ONLY with a valid JSON array (no extra text, no markdown):\n"
+    '[\n  {{"start": 10.5, "end": 75.2, "reason": "Assunto: Introducao e contexto"}},\n'
+    '  {{"start": 75.2, "end": 300.0, "reason": "Assunto: ..."}}\n]'
 )
 
 # Base URLs para providers OpenAI-compativeis
@@ -234,7 +256,7 @@ def _has_cuda() -> bool:
 
 def transcribe_for_viral(audio_path: Path, model: str = "large-v3") -> list[dict]:
     """Transcreve com faster-whisper para analise viral."""
-    print(f"[transcription] Transcrevendo para analise viral (modelo: {model})...", flush=True)
+    print(f"[transcription] Transcrevendo com Whisper (modelo: {model})...", flush=True)
     from faster_whisper import WhisperModel
 
     device = "cuda" if _has_cuda() else "cpu"
@@ -255,25 +277,78 @@ def transcribe_for_viral(audio_path: Path, model: str = "large-v3") -> list[dict
     return results
 
 
+def transcribe_parakeet(audio_path: Path, model: str = "nvidia/parakeet-tdt-1.1b",
+                        segment_pause: float = 0.3, segment_max_words: int = 15) -> list[dict]:
+    """Transcreve com NVIDIA Parakeet (NeMo) — apenas ingles, mais rapido que Whisper."""
+    print(f"[transcription] Transcrevendo com Parakeet (modelo: {model})...", flush=True)
+    try:
+        import nemo.collections.asr as nemo_asr
+    except ImportError:
+        print("[WARN] NeMo nao instalado. Usando Whisper large-v3 como fallback...", flush=True)
+        return transcribe_for_viral(audio_path, "large-v3")
+
+    import torch
+    mdl = nemo_asr.models.ASRModel.from_pretrained(model)
+    if torch.cuda.is_available():
+        mdl = mdl.cuda()
+
+    output = mdl.transcribe([str(audio_path)], timestamps=True)
+    hyp = output[0][0] if isinstance(output[0], list) else output[0]
+
+    segs = []
+    if hasattr(hyp, "timestamp") and hyp.timestamp and "word" in hyp.timestamp:
+        words = hyp.timestamp["word"]
+        cur = {"start": 0, "end": 0, "words": []}
+        for w in words:
+            s, e, word = w.get("start", 0), w.get("end", 0), w.get("word", "")
+            if not cur["words"]:
+                cur = {"start": s, "end": e, "words": [word]}
+            elif (s - cur["end"] > segment_pause or len(cur["words"]) >= segment_max_words):
+                segs.append({"start": cur["start"], "end": cur["end"], "text": " ".join(cur["words"])})
+                cur = {"start": s, "end": e, "words": [word]}
+            else:
+                cur["end"] = e
+                cur["words"].append(word)
+        if cur["words"]:
+            segs.append({"start": cur["start"], "end": cur["end"], "text": " ".join(cur["words"])})
+    else:
+        text = hyp.text if hasattr(hyp, "text") else str(hyp)
+        segs.append({"start": 0, "end": 0, "text": text})
+        print("[WARN] Parakeet nao retornou timestamps por palavra", flush=True)
+
+    print(f"[transcription] {len(segs)} segmentos (Parakeet/en)", flush=True)
+    return segs
+
+
 def _build_prompts(
     segments: list[dict],
     num_clips: int,
-    min_dur: int,
-    max_dur: int,
+    min_dur: int | None = None,
+    max_dur: int | None = None,
     custom_system: str | None = None,
     custom_user: str | None = None,
+    topics_mode: bool = False,
 ) -> tuple[str, str]:
     """Retorna (system_prompt, user_prompt) com suporte a customização."""
     transcript_text = "\n".join(
         f"[{seg['start']:.1f}s - {seg['end']:.1f}s] {seg['text']}"
         for seg in segments
     )
-    system = (custom_system or DEFAULT_SYSTEM_PROMPT).strip()
-    user_template = (custom_user or DEFAULT_USER_PROMPT).strip()
-    user = user_template.format(
+    if topics_mode:
+        system = (custom_system or DEFAULT_TOPICS_SYSTEM_PROMPT).strip()
+        user_template = (custom_user or DEFAULT_TOPICS_USER_PROMPT).strip()
+    else:
+        system = (custom_system or DEFAULT_SYSTEM_PROMPT).strip()
+        user_template = (custom_user or DEFAULT_USER_PROMPT).strip()
+    # Escape literal braces (e.g. JSON examples in custom prompts) before .format()
+    # Strategy: escape ALL braces, then re-introduce our known placeholders
+    safe_template = user_template.replace("{", "{{").replace("}", "}}")
+    for key in ("num_clips", "min_dur", "max_dur", "transcript"):
+        safe_template = safe_template.replace("{{" + key + "}}", "{" + key + "}")
+    user = safe_template.format(
         num_clips=num_clips,
-        min_dur=min_dur,
-        max_dur=max_dur,
+        min_dur=min_dur or 0,
+        max_dur=max_dur or 99999,
         transcript=transcript_text,
     )
     return system, user
@@ -435,8 +510,8 @@ def split_equal_parts(source: Path, num_parts: int, clips_dir: Path) -> list[tup
 def analyze_viral(
     segments: list[dict],
     num_clips: int,
-    min_dur: int,
-    max_dur: int,
+    min_dur: int | None = None,
+    max_dur: int | None = None,
     provider: str = "ollama",
     ollama_model: str = "qwen2.5:7b",
     ollama_url: str = "http://localhost:11434",
@@ -445,12 +520,16 @@ def analyze_viral(
     llm_base_url: str = "",
     system_prompt: str | None = None,
     user_prompt: str | None = None,
+    topics_mode: bool = False,
 ) -> list[dict]:
-    """Identifica os segmentos mais virais usando o provider LLM configurado."""
+    """Identifica segmentos virais ou por assunto usando o provider LLM configurado."""
     model_label = llm_model if provider != "ollama" else ollama_model
-    print(f"[analysis] Analisando com {provider}/{model_label} ({num_clips} clips, {min_dur}-{max_dur}s)...", flush=True)
+    if topics_mode:
+        print(f"[analysis] Analisando assuntos com {provider}/{model_label} ({num_clips} max topicos)...", flush=True)
+    else:
+        print(f"[analysis] Analisando com {provider}/{model_label} ({num_clips} clips, {min_dur}-{max_dur}s)...", flush=True)
 
-    system, user = _build_prompts(segments, num_clips, min_dur, max_dur, system_prompt, user_prompt)
+    system, user = _build_prompts(segments, num_clips, min_dur, max_dur, system_prompt, user_prompt, topics_mode=topics_mode)
 
     try:
         if provider == "ollama":
@@ -473,13 +552,16 @@ def main():
     parser = argparse.ArgumentParser(description="Clipar v1 - Corte de clips de video")
     parser.add_argument("--in", dest="input", required=True, help="URL ou caminho do arquivo")
     parser.add_argument("--outdir", required=True, help="Diretorio de saida para clips")
-    parser.add_argument("--mode", default="manual", choices=["manual", "viral"])
+    parser.add_argument("--mode", default="manual", choices=["manual", "viral", "topics"])
     parser.add_argument("--timestamps", default="", help="Ex: 00:30-02:15,05:00-07:30")
     parser.add_argument("--ollama-model", default="qwen2.5:7b", dest="ollama_model")
     parser.add_argument("--num-clips", type=int, default=5, dest="num_clips")
     parser.add_argument("--min-duration", type=int, default=30, dest="min_duration")
     parser.add_argument("--max-duration", type=int, default=120, dest="max_duration")
+    parser.add_argument("--asr-engine", default="whisper", choices=["whisper", "parakeet"], dest="asr_engine")
     parser.add_argument("--whisper-model", default="large-v3", dest="whisper_model")
+    parser.add_argument("--parakeet-model", default="nvidia/parakeet-tdt-1.1b", dest="parakeet_model",
+                        choices=["nvidia/parakeet-tdt-1.1b", "nvidia/parakeet-ctc-1.1b", "nvidia/parakeet-rnnt-1.1b"])
     parser.add_argument("--ollama-url", default="http://localhost:11434", dest="ollama_url")
     # Providers externos
     parser.add_argument("--llm-provider", default="ollama",
@@ -529,7 +611,7 @@ def main():
             create_zip(clips_dir)
             write_checkpoint(workdir, 3, "zip", "Criando ZIP")
 
-        else:  # viral
+        else:  # viral / topics
             # Etapa 1: Download
             source = download_input(args.input, workdir)
             write_checkpoint(workdir, 1, "download", "Download")
@@ -556,17 +638,21 @@ def main():
                 write_checkpoint(workdir, 2, "extraction", "Extracao de audio")
 
                 # Etapa 3: Transcription
-                segments = transcribe_for_viral(audio, args.whisper_model)
+                if args.asr_engine == "parakeet":
+                    segments = transcribe_parakeet(audio, args.parakeet_model)
+                else:
+                    segments = transcribe_for_viral(audio, args.whisper_model)
                 if not segments:
                     raise RuntimeError("Nenhum segmento de fala detectado no audio")
                 write_checkpoint(workdir, 3, "transcription", "Transcricao")
 
                 # Etapa 4: Analysis
+                is_topics = (args.mode == "topics")
                 viral_clips = analyze_viral(
                     segments,
                     args.num_clips,
-                    args.min_duration,
-                    args.max_duration,
+                    min_dur=None if is_topics else args.min_duration,
+                    max_dur=None if is_topics else args.max_duration,
                     provider=args.llm_provider,
                     ollama_model=args.ollama_model,
                     ollama_url=args.ollama_url,
@@ -575,6 +661,7 @@ def main():
                     llm_base_url=args.llm_base_url,
                     system_prompt=args.system_prompt or None,
                     user_prompt=args.user_prompt or None,
+                    topics_mode=is_topics,
                 )
                 print(f"[analysis] {len(viral_clips)} clips identificados:", flush=True)
                 timestamps = []
@@ -589,7 +676,8 @@ def main():
                         descriptions.append(reason)
                 if not timestamps:
                     raise RuntimeError("Nenhum clip valido retornado pelo LLM")
-                write_checkpoint(workdir, 4, "analysis", "Analise viral")
+                analysis_label = "Analise por assunto" if args.mode == "topics" else "Analise viral"
+                write_checkpoint(workdir, 4, "analysis", analysis_label)
 
                 # Etapa 5: Cutting
                 cut_clips(source, timestamps, clips_dir)

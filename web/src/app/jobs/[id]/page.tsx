@@ -279,7 +279,7 @@ export default function JobDetail() {
             )}
             {jobType === "cutting" && (
               <>
-                <span className="mx-2">|</span>Modo: {String(config.mode || "manual")}
+                <span className="mx-2">|</span>Modo: {config.mode === "viral" ? "IA/Viral" : config.mode === "topics" ? "IA/Assunto" : "Manual"}
               </>
             )}
             {jobType === "transcription" && (
@@ -331,29 +331,41 @@ export default function JobDetail() {
         </div>
       </div>
 
-      {/* Progress bar + ETA */}
-      {(isActive || isCompleted) && (
+      {/* Progress / Stages section — visible for active, completed, and failed/cancelled (when stages exist) */}
+      {((isActive || isCompleted) || stages.length > 0) && (
         <section className="border border-gray-800 rounded-lg p-5 mb-6">
-          <div className="flex justify-between items-center mb-3">
-            <div className="flex items-center gap-3">
-              <h2 className="text-lg font-semibold">Progresso</h2>
-              {isActive && etaText && (
-                <span className="text-sm text-gray-400">
-                  ETA: <span className="text-white font-mono">{etaText}</span>
-                </span>
+          {/* Header — full progress when running/done, simplified when failed/cancelled */}
+          {(isActive || isCompleted) ? (
+            <div className="flex justify-between items-center mb-3">
+              <div className="flex items-center gap-3">
+                <h2 className="text-lg font-semibold">Progresso</h2>
+                {isActive && etaText && (
+                  <span className="text-sm text-gray-400">
+                    ETA: <span className="text-white font-mono">{etaText}</span>
+                  </span>
+                )}
+              </div>
+              <div className="text-right">
+                <span className="text-2xl font-bold font-mono text-blue-400">{percent}%</span>
+                <div className="text-xs text-gray-500">{formatTime(elapsedS)} decorrido</div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex justify-between items-center mb-3">
+              <h2 className="text-lg font-semibold">Etapas</h2>
+              {!!elapsedS && (
+                <span className="text-xs text-gray-500">{formatTime(elapsedS)} decorrido</span>
               )}
             </div>
-            <div className="text-right">
-              <span className="text-2xl font-bold font-mono text-blue-400">{percent}%</span>
-              <div className="text-xs text-gray-500">{formatTime(elapsedS)} decorrido</div>
-            </div>
-          </div>
+          )}
 
-          {/* Bar */}
-          <div className="bg-gray-800 rounded-full h-3 mb-5">
-            <div className={`h-3 rounded-full transition-all duration-500 ${isCompleted ? "bg-green-500" : "bg-blue-500"}`}
-              style={{ width: `${percent}%` }} />
-          </div>
+          {/* Progress bar — only when active or completed */}
+          {(isActive || isCompleted) && (
+            <div className="bg-gray-800 rounded-full h-3 mb-5">
+              <div className={`h-3 rounded-full transition-all duration-500 ${isCompleted ? "bg-green-500" : "bg-blue-500"}`}
+                style={{ width: `${percent}%` }} />
+            </div>
+          )}
 
           {/* Pipeline steps */}
           <div className="space-y-1">
@@ -361,24 +373,36 @@ export default function JobDetail() {
               const isDone = stage.status === "done";
               const isRunning = stage.status === "running";
               const isPending = stage.status === "pending";
+              // Stage was running when job stopped — mark as interrupted
+              const isInterrupted = isRunning && !isActive;
 
               return (
                 <div key={stage.id}
                   className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm ${
+                    isInterrupted ? "bg-red-500/10 border border-red-500/30" :
                     isRunning ? "bg-blue-500/10 border border-blue-500/30" :
                     isDone ? "bg-gray-800/50" : "opacity-40"
                   }`}>
                   {/* Status icon */}
                   <div className={`w-6 text-center ${
-                    isDone ? "text-green-400" : isRunning ? "text-blue-400" : "text-gray-600"
+                    isDone ? "text-green-400" : isInterrupted ? "text-red-400" : isRunning ? "text-blue-400" : "text-gray-600"
                   }`}>
-                    {isDone ? "✓" : isRunning ? "▸" : "○"}
+                    {isDone ? "✓" : isInterrupted ? "✗" : isRunning ? "▸" : "○"}
                   </div>
 
                   {/* Step number + name */}
                   <div className="w-6 text-center text-gray-500 font-mono text-xs">{stage.num}</div>
-                  <div className={`flex-1 ${isRunning ? "text-white font-medium" : isDone ? "text-gray-400" : "text-gray-600"}`}>
+                  <div className={`flex-1 ${
+                    isInterrupted ? "text-red-300" :
+                    isRunning ? "text-white font-medium" :
+                    isDone ? "text-gray-400" : "text-gray-600"
+                  }`}>
                     <span>{stage.name}</span>
+                    {isInterrupted && (
+                      <span className="ml-2 text-xs text-red-400">
+                        {status === "cancelled" ? "(cancelado)" : "(falhou)"}
+                      </span>
+                    )}
                     {stage.tool && <span className="text-xs text-gray-500 ml-2">{stage.tool}</span>}
                     {jobType === "dubbing" && (() => {
                       const sd = getStageDevice(stage.id, config, device);
@@ -386,9 +410,9 @@ export default function JobDetail() {
                         <span className={`ml-2 text-xs font-mono ${sd.color} opacity-70`}>[{sd.label}]</span>
                       ) : null;
                     })()}
-                    {isRunning && !stage.log_progress && <span className="ml-2 inline-block animate-pulse">●</span>}
+                    {isRunning && !isInterrupted && !stage.log_progress && <span className="ml-2 inline-block animate-pulse">●</span>}
                     {/* Download/tool progress */}
-                    {isRunning && stage.log_progress && (
+                    {isRunning && !isInterrupted && stage.log_progress && (
                       <div className="mt-1">
                         <div className="flex items-center gap-2">
                           <div className="flex-1 bg-gray-700 rounded-full h-1.5">
@@ -415,8 +439,11 @@ export default function JobDetail() {
                     {isDone && stage.time != null && (
                       <span className="text-green-400">{formatTime(stage.time)}</span>
                     )}
-                    {isRunning && stage.elapsed != null && (
+                    {isRunning && !isInterrupted && stage.elapsed != null && (
                       <span className="text-blue-400">{formatTime(stage.elapsed)}</span>
+                    )}
+                    {isInterrupted && stage.elapsed != null && (
+                      <span className="text-red-400">{formatTime(stage.elapsed)}</span>
                     )}
                     {isPending && stage.estimate != null && (
                       <span className="text-gray-600">~{formatTime(stage.estimate)}</span>
@@ -757,11 +784,11 @@ export default function JobDetail() {
         )}
         {jobType === "cutting" && (
           <div className="grid grid-cols-2 gap-3 text-sm">
-            <div><span className="text-gray-500">Modo:</span> {String(config.mode || "manual")}</div>
+            <div><span className="text-gray-500">Modo:</span> {config.mode === "viral" ? "IA/Viral" : config.mode === "topics" ? "IA/Assunto" : "Manual"}</div>
             {config.mode === "manual" && !!config.timestamps && (
               <div className="col-span-2"><span className="text-gray-500">Timestamps:</span> <code className="bg-gray-800 px-1 rounded">{String(config.timestamps ?? "")}</code></div>
             )}
-            {config.mode === "viral" && (
+            {(config.mode === "viral" || config.mode === "topics") && (
               <>
                 <div><span className="text-gray-500">Modelo LLM:</span> {String(config.ollama_model || "-")}</div>
                 <div><span className="text-gray-500">Num clips:</span> {String(config.num_clips || 5)}</div>

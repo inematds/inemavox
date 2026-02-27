@@ -43,3 +43,4 @@ api/jobs.db
 
 # Docker
 .docker/
+.env

@@ -126,6 +126,7 @@ class Job:
         self.stage_times: dict[str, float] = {}
         self._last_stage_num = 0
         self._last_stage_start = 0.0
+        self._user_cancelled = False  # True apenas se o usuario clicou em Cancelar
 
     @property
     def duration(self) -> float:
@@ -139,7 +140,7 @@ class Job:
         job_type = self.config.get("job_type", "dubbing")
         if job_type == "cutting":
             mode = self.config.get("mode", "manual")
-            if mode == "viral" and not self.config.get("split_equal"):
+            if mode in ("viral", "topics") and not self.config.get("split_equal"):
                 return STAGES_CUT_VIRAL
             return STAGES_CUT_MANUAL
         elif job_type == "transcription":
@@ -621,6 +622,7 @@ class JobManager:
 
         try:
             env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"  # evita perda de log quando OOM killer mata o processo
             if not DOCKER_GPU_AVAILABLE:
                 python_dir = os.path.dirname(PYTHON_BIN)
                 if python_dir not in env.get("PATH", ""):
@@ -670,11 +672,15 @@ class JobManager:
                     # Salvar estatisticas para aprendizado (apenas dubbing)
                     if job_type == "dubbing":
                         record_job_complete(job.config, job.stage_times, job.duration, job.device)
-                elif exit_code == -signal.SIGTERM or exit_code == -signal.SIGKILL:
+                elif job._user_cancelled or exit_code == -signal.SIGTERM:
+                    # Cancelado pelo usuario (via botao Cancelar ou SIGTERM explicito)
                     job.status = "cancelled"
                 else:
+                    # SIGKILL sem cancelamento do usuario = OOM killer ou crash externo → falhou
                     job.status = "failed"
                     error_msg = f"Exit code: {exit_code}"
+                    if exit_code == -signal.SIGKILL:
+                        error_msg = f"Processo encerrado pelo sistema (SIGKILL, exit {exit_code}) — possivel OOM killer"
                     try:
                         lines = log_path.read_text().splitlines()
                         for line in reversed(lines[-20:]):
@@ -738,7 +744,7 @@ class JobManager:
 
         if config.get("mode") == "manual" and config.get("timestamps"):
             cmd.extend(["--timestamps", config["timestamps"]])
-        elif config.get("mode") == "viral":
+        elif config.get("mode") in ("viral", "topics"):
             if config.get("num_clips"):
                 cmd.extend(["--num-clips", str(config["num_clips"])])
             if config.get("split_equal"):
@@ -750,8 +756,12 @@ class JobManager:
                     cmd.extend(["--min-duration", str(config["min_duration"])])
                 if config.get("max_duration"):
                     cmd.extend(["--max-duration", str(config["max_duration"])])
+                if config.get("asr_engine") and config["asr_engine"] != "whisper":
+                    cmd.extend(["--asr-engine", config["asr_engine"]])
                 if config.get("whisper_model"):
                     cmd.extend(["--whisper-model", config["whisper_model"]])
+                if config.get("parakeet_model"):
+                    cmd.extend(["--parakeet-model", config["parakeet_model"]])
                 if config.get("llm_provider") and config["llm_provider"] != "ollama":
                     cmd.extend(["--llm-provider", config["llm_provider"]])
                 if config.get("llm_model"):
@@ -779,7 +789,7 @@ class JobManager:
 
         if config.get("mode") == "manual" and config.get("timestamps"):
             cmd.extend(["--timestamps", config["timestamps"]])
-        elif config.get("mode") == "viral":
+        elif config.get("mode") in ("viral", "topics"):
             if config.get("num_clips"):
                 cmd.extend(["--num-clips", str(config["num_clips"])])
             if config.get("split_equal"):
@@ -791,8 +801,12 @@ class JobManager:
                     cmd.extend(["--min-duration", str(config["min_duration"])])
                 if config.get("max_duration"):
                     cmd.extend(["--max-duration", str(config["max_duration"])])
+                if config.get("asr_engine") and config["asr_engine"] != "whisper":
+                    cmd.extend(["--asr-engine", config["asr_engine"]])
                 if config.get("whisper_model"):
                     cmd.extend(["--whisper-model", config["whisper_model"]])
+                if config.get("parakeet_model"):
+                    cmd.extend(["--parakeet-model", config["parakeet_model"]])
                 if config.get("llm_provider") and config["llm_provider"] != "ollama":
                     cmd.extend(["--llm-provider", config["llm_provider"]])
                 if config.get("llm_model"):
@@ -1041,6 +1055,8 @@ class JobManager:
             cmd.append("--diarize")
             if config.get("num_speakers"):
                 cmd.extend(["--num-speakers", str(config["num_speakers"])])
+            if config.get("diarize_engine"):
+                cmd.extend(["--diarize-engine", config["diarize_engine"]])
 
         if config.get("clone_voice"):
             cmd.append("--clonar-voz")
@@ -1101,6 +1117,8 @@ class JobManager:
             cmd.append("--diarize")
             if config.get("num_speakers"):
                 cmd.extend(["--num-speakers", str(config["num_speakers"])])
+            if config.get("diarize_engine"):
+                cmd.extend(["--diarize-engine", config["diarize_engine"]])
 
         if config.get("clone_voice"):
             cmd.append("--clonar-voz")
@@ -1117,6 +1135,7 @@ class JobManager:
         if not job:
             return False
         if job.process and job.process.poll() is None:
+            job._user_cancelled = True  # sinaliza que foi o usuario quem cancelou
             job.process.terminate()
             try:
                 job.process.wait(timeout=10)

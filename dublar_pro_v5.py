@@ -292,17 +292,24 @@ def check_xtts():
         return False
 
 def _patch_torchaudio_compat():
-    """Patches de compatibilidade: pyannote.audio com torchaudio >= 2.5 e numpy >= 2.0"""
+    """Patches de compatibilidade: pyannote.audio com torchaudio >= 2.5, numpy >= 2.0 e huggingface_hub >= 1.0"""
     try:
-        # numpy 2.0 removeu np.NaN (pyannote usa)
+        # numpy 2.0 removeu np.NaN e np.NAN (pyannote/scipy usam)
         import numpy as np
         if not hasattr(np, 'NaN'):
             np.NaN = np.nan
+        if not hasattr(np, 'NAN'):
+            np.NAN = np.nan
     except Exception:
         pass
     try:
-        # torchaudio 2.5+ removeu set_audio_backend e AudioMetaData
-        import torchaudio
+        # torchaudio 2.5+ removeu set_audio_backend, get_audio_backend, list_audio_backends e AudioMetaData
+        # torchaudio 2.9+ substituiu torchaudio.load() por TorchCodec (requer pacote separado)
+        import torchaudio, torch
+        if not hasattr(torchaudio, 'list_audio_backends'):
+            torchaudio.list_audio_backends = lambda: []
+        if not hasattr(torchaudio, 'get_audio_backend'):
+            torchaudio.get_audio_backend = lambda: None
         if not hasattr(torchaudio, 'set_audio_backend'):
             torchaudio.set_audio_backend = lambda x: None
         if not hasattr(torchaudio, 'AudioMetaData'):
@@ -313,6 +320,58 @@ def _patch_torchaudio_compat():
                 bits_per_sample: int = 0
                 encoding: str = ""
             torchaudio.AudioMetaData = _AudioMetaData
+        # torchaudio 2.9+ usa TorchCodec para load(); fallback para soundfile se nao instalado
+        # torchaudio 2.9+ removeu torchaudio.info() completamente
+        _orig_load = torchaudio.load
+        def _safe_load(uri, *args, **kwargs):
+            try:
+                return _orig_load(uri, *args, **kwargs)
+            except ImportError:
+                import soundfile as sf
+                data, sr = sf.read(str(uri), dtype='float32', always_2d=True)
+                # soundfile retorna (samples, channels); converter para (channels, samples)
+                waveform = torch.tensor(data.T, dtype=torch.float32)
+                return waveform, sr
+        torchaudio.load = _safe_load
+
+        if not hasattr(torchaudio, 'info'):
+            def _sf_info(uri, *args, **kwargs):
+                import soundfile as sf
+                sf_info = sf.info(str(uri))
+                class _Meta:
+                    sample_rate = sf_info.samplerate
+                    num_frames = sf_info.frames
+                    num_channels = sf_info.channels
+                    bits_per_sample = 16
+                    encoding = 'PCM_S'
+                return _Meta()
+            torchaudio.info = _sf_info
+
+        # patch no modulo pyannote.audio.core.io que importa torchaudio diretamente
+        try:
+            import pyannote.audio.core.io as _io
+            _io.torchaudio = torchaudio
+        except Exception:
+            pass
+    except Exception:
+        pass
+    try:
+        # huggingface_hub >= 1.0 removeu use_auth_token= do hf_hub_download
+        # pyannote 3.1.x usa 'from huggingface_hub import hf_hub_download' internamente
+        # precisamos patchear a referencia no proprio modulo do pyannote apos o import
+        import huggingface_hub
+        _orig = huggingface_hub.hf_hub_download
+        def _patched(*args, **kwargs):
+            if 'use_auth_token' in kwargs:
+                kwargs['token'] = kwargs.pop('use_auth_token')
+            return _orig(*args, **kwargs)
+        huggingface_hub.hf_hub_download = _patched
+        # Patch no modulo interno do pyannote (ja importou a referencia propria)
+        try:
+            import pyannote.audio.core.pipeline as _pp
+            _pp.hf_hub_download = _patched
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -372,47 +431,46 @@ def set_global_seed(seed=GLOBAL_SEED):
     except:
         pass
 
+def is_url(url):
+    """Verifica se e uma URL (qualquer plataforma)"""
+    return re.match(r'^https?://', str(url)) is not None
+
 def is_youtube_url(url):
-    """Verifica se e uma URL do YouTube"""
-    youtube_patterns = [
-        r'(youtube\.com/watch\?v=)',
-        r'(youtu\.be/)',
-        r'(youtube\.com/embed/)',
-        r'(youtube\.com/v/)',
-    ]
-    return any(re.search(p, str(url)) for p in youtube_patterns)
+    """Verifica se e uma URL do YouTube (mantido para compatibilidade)"""
+    return is_url(url)
 
 def download_youtube(url, output_dir):
-    """Baixa video do YouTube usando yt-dlp, mantendo o titulo original"""
+    """Baixa video de qualquer plataforma suportada por yt-dlp (YouTube, TikTok, Instagram, etc.)"""
     print("\n" + "="*60)
-    print("=== Download do YouTube ===")
+    print("=== Download de Video ===")
     print("="*60)
 
-    if not check_yt_dlp():
-        print("[ERRO] yt-dlp nao encontrado. Instale com: pip install yt-dlp")
+    try:
+        import yt_dlp
+    except ImportError:
+        print("[ERRO] yt-dlp nao instalado. Instale com: pip install yt-dlp")
         sys.exit(1)
 
-    # Usar titulo do video como nome do arquivo
-    output_template = str(Path(output_dir) / "%(title)s.%(ext)s")
+    outtmpl = str(Path(output_dir) / "video.%(ext)s")
+    ydl_opts = {
+        "format": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+        "outtmpl": outtmpl,
+        "merge_output_format": "mp4",
+    }
 
-    sh([
-        _find_yt_dlp(),
-        "-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[ext=mp4]/best",
-        "--merge-output-format", "mp4",
-        "--restrict-filenames",  # Remove caracteres especiais do nome
-        "-o", output_template,
-        url
-    ])
+    print(f"[INFO] Baixando: {url}", flush=True)
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([url])
 
     # Encontrar o arquivo baixado
-    mp4_files = list(Path(output_dir).glob("*.mp4"))
+    out_dir = Path(output_dir)
+    mp4_files = list(out_dir.glob("video.*"))
     if mp4_files:
-        # Pegar o mais recente
         output_path = max(mp4_files, key=lambda p: p.stat().st_mtime)
         print(f"[OK] Video baixado: {output_path}")
         return output_path
     else:
-        print("[ERRO] Nenhum arquivo MP4 encontrado apos download")
+        print("[ERRO] Nenhum arquivo encontrado apos download")
         sys.exit(1)
 
 # ============================================================================
@@ -486,8 +544,238 @@ def load_checkpoint(workdir):
 # FASE 3: DIARIZACAO (DETECTAR FALANTES)
 # ============================================================================
 
+# Python do ambiente NeMo/miniconda (usado como subprocess para diarização NeMo)
+_NEMO_PYTHON = os.environ.get(
+    "NEMO_PYTHON",
+    "/home/nmaldaner/miniconda3/bin/python3"
+)
+
+
+def _liberar_memoria():
+    """Força liberação agressiva de RAM: Python GC + glibc malloc_trim + sleep.
+
+    Usado antes de carregar modelos pesados (pyannote, NeMo) para garantir que
+    modelos anteriores (CTranslate2, etc.) realmente devolvam páginas ao SO.
+    """
+    import gc
+    import time
+    gc.collect()
+    gc.collect()
+    try:
+        import torch
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
+    try:
+        import ctypes
+        ctypes.cdll.LoadLibrary("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
+    time.sleep(2)  # permite ao kernel reclamar as paginas
+
+
+def diarize_audio_nemo(wav_path, workdir, num_speakers=None):
+    """Diarização usando NeMo nativo (titanet_large + vad_multilingual_marblenet).
+
+    Executa um subprocess usando o Python do ambiente NeMo (miniconda3).
+    Vantagens sobre pyannote: GPU nativa NVIDIA, sem dependências de torchaudio, sem gated models HF.
+
+    Args:
+        wav_path: caminho do arquivo WAV (qualquer sample rate — reamostrado internamente)
+        workdir: diretório de trabalho do job
+        num_speakers: número de falantes esperados (None = auto-detectar)
+
+    Returns:
+        Lista de {start, end, speaker} ou None em caso de erro.
+    """
+    import subprocess
+    import json
+    import re
+
+    nemo_outdir = Path(workdir) / "nemo_diar"
+    nemo_outdir.mkdir(exist_ok=True)
+
+    # Script inline executado no ambiente NeMo
+    script = f"""
+import sys, os, json, re, subprocess, shutil, traceback
+from pathlib import Path
+
+wav_path = {repr(str(wav_path))}
+nemo_outdir = Path({repr(str(nemo_outdir))})
+num_speakers = {repr(num_speakers)}
+result_path = nemo_outdir / "diar_result.json"
+
+try:
+    from omegaconf import OmegaConf
+    import torch
+    import nemo.collections.asr as nemo_asr
+
+    # Resamplear para 16kHz (NeMo requer 16kHz)
+    wav_16k = nemo_outdir / "audio_16k.wav"
+    if not wav_16k.exists():
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", wav_path, "-ar", "16000", "-ac", "1", str(wav_16k)],
+            check=True, capture_output=True
+        )
+    print("[NeMo] Audio reamostrado para 16kHz")
+
+    # Manifest
+    manifest_path = nemo_outdir / "manifest.json"
+    entry = {{
+        "audio_filepath": str(wav_16k),
+        "offset": 0,
+        "duration": None,
+        "label": "infer",
+        "text": "-",
+    }}
+    if num_speakers:
+        entry["num_speakers"] = num_speakers
+    with open(manifest_path, "w") as f:
+        f.write(json.dumps(entry) + "\\n")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"[NeMo] Device: {{device.upper()}}")
+
+    # Config ClusteringDiarizer
+    cfg = OmegaConf.create({{
+        "sample_rate": 16000,
+        "batch_size": 64,
+        "num_workers": 0,
+        "device": device,
+        "verbose": False,
+        "diarizer": {{
+            "manifest_filepath": str(manifest_path),
+            "out_dir": str(nemo_outdir),
+            "oracle_vad": False,
+            "collar": 0.25,
+            "ignore_overlap": True,
+            "vad": {{
+                "model_path": "vad_multilingual_marblenet",
+                "external_vad_manifest": None,
+                "parameters": {{
+                    "window_length_in_sec": 0.15,
+                    "shift_length_in_sec": 0.01,
+                    "smoothing": "median",
+                    "overlap": 0.875,
+                    "onset": 0.1,
+                    "offset": 0.1,
+                    "pad_onset": 0.1,
+                    "pad_offset": 0.0,
+                    "min_duration_on": 0.2,
+                    "min_duration_off": 0.2,
+                    "filter_speech_first": True,
+                }},
+            }},
+            "speaker_embeddings": {{
+                "model_path": "titanet_large",
+                "parameters": {{
+                    "window_length_in_sec": [1.5, 1.25, 1.0, 0.75, 0.5],
+                    "shift_length_in_sec": [0.75, 0.625, 0.5, 0.375, 0.25],
+                    "multiscale_weights": [1, 1, 1, 1, 1],
+                    "save_embeddings": False,
+                }},
+            }},
+            "clustering": {{
+                "parameters": {{
+                    "oracle_num_speakers": num_speakers is not None,
+                    "max_num_speakers": num_speakers if num_speakers else 8,
+                    "enhanced_count_thres": 80,
+                    "max_rp_threshold": 0.25,
+                    "sparse_search_volume": 30,
+                    "maj_vote_spk_count": False,
+                }},
+            }},
+        }},
+    }})
+
+    print("[NeMo] Carregando modelos (titanet_large + VAD)...")
+    diarizer = nemo_asr.models.ClusteringDiarizer(cfg=cfg)
+    print("[NeMo] Diarizando...")
+    diarizer.diarize()
+
+    # Ler RTTM: SPEAKER audio_id 1 start duration <NA> <NA> speaker_id <NA> <NA>
+    audio_id = wav_16k.stem
+    rttm_path = nemo_outdir / "pred_rttms" / f"{{audio_id}}.rttm"
+    if not rttm_path.exists():
+        # Tentar qualquer .rttm no diretório
+        rttms = list((nemo_outdir / "pred_rttms").glob("*.rttm"))
+        rttm_path = rttms[0] if rttms else None
+
+    if not rttm_path:
+        raise FileNotFoundError("Nenhum arquivo RTTM gerado")
+
+    segs = []
+    with open(rttm_path) as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) < 8 or parts[0] != "SPEAKER":
+                continue
+            start = float(parts[3])
+            dur = float(parts[4])
+            end = start + dur
+            speaker = parts[7]
+            # Normalizar: "speaker_0" / "0" -> "SPEAKER_00"
+            m = re.search(r'(\\d+)$', speaker)
+            label = f"SPEAKER_{{m.group(1).zfill(2)}}" if m else speaker.upper()
+            segs.append({{"start": start, "end": end, "speaker": label}})
+
+    segs.sort(key=lambda x: x["start"])
+    speakers = list(set(s["speaker"] for s in segs))
+    print(f"[NeMo] OK: {{len(segs)}} segmentos, {{len(speakers)}} falantes: {{speakers}}")
+    with open(result_path, "w") as f:
+        json.dump({{"segments": segs, "speakers": speakers}}, f)
+
+except Exception as e:
+    print(f"[NeMo] ERRO: {{e}}", file=sys.stderr)
+    traceback.print_exc()
+    with open(result_path, "w") as f:
+        json.dump({{"error": str(e)}}, f)
+    sys.exit(1)
+"""
+
+    result_path = nemo_outdir / "diar_result.json"
+
+    print("[INFO] Diarização NeMo: iniciando subprocess...")
+    try:
+        proc = subprocess.run(
+            [_NEMO_PYTHON, "-c", script],
+            capture_output=False,
+            timeout=600,
+        )
+        if proc.returncode != 0:
+            print(f"[ERRO] Subprocess NeMo falhou (exit {proc.returncode})")
+            return None
+    except subprocess.TimeoutExpired:
+        print("[ERRO] Diarização NeMo timeout (>10min)")
+        return None
+    except FileNotFoundError:
+        print(f"[ERRO] Python NeMo não encontrado: {_NEMO_PYTHON}")
+        return None
+
+    # Ler resultado
+    if not result_path.exists():
+        print("[ERRO] Resultado NeMo não encontrado")
+        return None
+
+    try:
+        data = json.loads(result_path.read_text())
+        if "error" in data:
+            print(f"[ERRO] Diarização NeMo: {data['error']}")
+            return None
+        segs = data["segments"]
+        speakers = data.get("speakers", [])
+        print(f"[OK] Diarização NeMo: {len(segs)} segmentos, {len(speakers)} falantes")
+        return segs
+    except Exception as e:
+        print(f"[ERRO] Lendo resultado NeMo: {e}")
+        return None
+
+
 def diarize_audio(wav_path, workdir, num_speakers=None):
-    """Detecta diferentes falantes no audio usando pyannote
+    """Detecta diferentes falantes no audio usando pyannote.
+
+    Roda em subprocess isolado para garantir que memoria do modelo ASR anterior
+    seja completamente liberada pelo OS antes do pyannote carregar (evita OOM).
 
     Args:
         wav_path: caminho do arquivo WAV
@@ -506,57 +794,142 @@ def diarize_audio(wav_path, workdir, num_speakers=None):
         print("[INFO] Continuando com falante unico (voz padrao para todos os segmentos).")
         return None
 
+    hf_token = os.environ.get("HF_TOKEN", "")
+    if not hf_token:
+        print("[ERRO] HF_TOKEN nao definido.")
+        print("[INFO] Para usar diarizacao:")
+        print("[INFO]   1. Aceite os termos em https://hf.co/pyannote/speaker-diarization-3.1")
+        print("[INFO]   2. Crie token em https://hf.co/settings/tokens")
+        print("[INFO]   3. Adicione HF_TOKEN=hf_xxx no arquivo .env do projeto")
+        return None
+
+    diar_out = Path(workdir) / "diarization.json"
+    # WAV 16kHz para diarizacao (pyannote usa 16kHz internamente; passar 48kHz causa pico de memoria)
+    wav_16k = Path(workdir) / "diar_16k.wav"
+    _pyannote_python = sys.executable  # mesmo Python do venv atual
+
+    # Resamplear para 16kHz com ffmpeg ANTES do subprocess (reduz 3x o uso de RAM no pyannote)
+    import subprocess as _sp_pre
     try:
-        _patch_torchaudio_compat()
-        from pyannote.audio import Pipeline
+        _sp_pre.run(
+            ["ffmpeg", "-y", "-i", str(wav_path), "-ar", "16000", "-ac", "1", str(wav_16k)],
+            capture_output=True, check=True
+        )
+        wav_for_diar = wav_16k
+        print(f"[INFO] Audio resampleado para 16kHz: {wav_16k.stat().st_size // 1024 // 1024}MB")
+    except Exception as _e:
+        print(f"[WARN] Resample 16kHz falhou ({_e}), usando audio original")
+        wav_for_diar = Path(wav_path)
+
+    num_speakers_line = f"num_speakers = {int(num_speakers)}" if num_speakers else "num_speakers = None"
+
+    script = f"""
+import sys, os, json
+# CUDA_VISIBLE_DEVICES="" deve ser setado ANTES de qualquer import torch/torchaudio
+# para impedir o driver CUDA de inicializar (GB10 unified memory: sem isso, 167GB virt alocados)
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ.setdefault("PYTORCH_NO_CUDA_MEMORY_CACHING", "1")
+try:
+    import numpy as np
+    if not hasattr(np, 'NaN'):
+        np.NaN = np.nan
+    if not hasattr(np, 'NAN'):
+        np.NAN = np.nan
+except Exception:
+    pass
+try:
+    import torchaudio
+    torchaudio.list_audio_backends = lambda: []
+    torchaudio.get_audio_backend = lambda: None
+    torchaudio.set_audio_backend = lambda x: None
+    class _FakeAudioMeta:
+        def __init__(self, *a, **kw): self.sample_rate=16000; self.num_frames=0; self.num_channels=1; self.bits_per_sample=16; self.encoding='PCM_S'
+    if not hasattr(torchaudio, 'AudioMetaData'):
+        torchaudio.AudioMetaData = _FakeAudioMeta
+    import soundfile as _sf
+    # frame_offset/num_frames DEVEM ser passados para soundfile.read (start/frames)
+    # Sem isso, cada crop carregava o arquivo INTEIRO (500 segs x 92MB = 46GB+)
+    def _load_compat(path, frame_offset=0, num_frames=-1, *a, **kw):
+        data, sr = _sf.read(str(path), dtype='float32', always_2d=True,
+                            start=int(frame_offset), frames=int(num_frames))
         import torch
+        return torch.tensor(data.T), sr
+    torchaudio.load = _load_compat
+    def _info_compat(path, *a, **kw):
+        info = _sf.info(str(path))
+        m = _FakeAudioMeta()
+        m.sample_rate = info.samplerate
+        m.num_frames = info.frames
+        m.num_channels = info.channels
+        return m
+    torchaudio.info = _info_compat
+    import pyannote.audio.core.io as _paio
+    _paio.torchaudio = torchaudio
+except Exception:
+    pass
 
-        # Carregar pipeline (requer token HuggingFace para alguns modelos)
-        hf_token = os.environ.get("HF_TOKEN", None)
+import torch
 
-        if hf_token:
-            pipeline = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-3.1",
-                token=hf_token
-            )
-        else:
-            print("[ERRO] HF_TOKEN nao definido.")
-            print("[INFO] Para usar diarizacao:")
-            print("[INFO]   1. Aceite os termos em https://hf.co/pyannote/speaker-diarization-3.1")
-            print("[INFO]   2. Crie token em https://hf.co/settings/tokens")
-            print("[INFO]   3. Adicione HF_TOKEN=hf_xxx no arquivo .env do projeto")
+import huggingface_hub
+huggingface_hub.login(token={repr(hf_token)}, add_to_git_credential=False)
+
+from pyannote.audio import Pipeline
+pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
+pipeline = pipeline.to(torch.device("cpu"))
+try:
+    pipeline._segmentation.batch_size = 8
+except Exception:
+    pass
+try:
+    pipeline._embedding.batch_size = 8
+except Exception:
+    pass
+
+{num_speakers_line}
+if num_speakers:
+    diarization = pipeline({repr(str(wav_for_diar))}, num_speakers=num_speakers)
+else:
+    diarization = pipeline({repr(str(wav_for_diar))})
+
+segments = []
+for turn, _, speaker in diarization.itertracks(yield_label=True):
+    segments.append({{"start": turn.start, "end": turn.end, "speaker": speaker}})
+
+with open({repr(str(diar_out))}, "w") as f:
+    import json
+    json.dump(segments, f, indent=2)
+
+speakers = set(s["speaker"] for s in segments)
+print(f"[OK] Detectados {{len(speakers)}} falantes: {{speakers}}", flush=True)
+"""
+
+    import subprocess as _sp
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTORCH_NO_CUDA_MEMORY_CACHING"] = "1"
+    env["CUDA_VISIBLE_DEVICES"] = ""  # impede driver CUDA de inicializar no subprocess
+
+    try:
+        print("[INFO] Diarizacao rodando em subprocess isolado (evita OOM apos ASR)")
+        proc = _sp.run(
+            [_pyannote_python, "-c", script],
+            env=env,
+            timeout=3600,
+        )
+        if proc.returncode != 0:
+            print(f"[ERRO] Subprocess de diarizacao retornou {proc.returncode}")
             return None
-
-        device = get_device()
-        if device == "cuda":
-            pipeline = pipeline.to(torch.device("cuda"))
-
-        # Executar diarizacao
-        if num_speakers:
-            diarization = pipeline(str(wav_path), num_speakers=num_speakers)
-        else:
-            diarization = pipeline(str(wav_path))
-
-        # Converter para lista de segmentos
-        segments = []
-        for turn, _, speaker in diarization.itertracks(yield_label=True):
-            segments.append({
-                "start": turn.start,
-                "end": turn.end,
-                "speaker": speaker
-            })
-
-        # Salvar diarizacao
-        diar_path = Path(workdir, "diarization.json")
-        with open(diar_path, "w", encoding="utf-8") as f:
-            json.dump(segments, f, indent=2, ensure_ascii=False)
-
-        # Contar falantes
+        if not diar_out.exists():
+            print("[ERRO] Arquivo de diarizacao nao gerado pelo subprocess")
+            return None
+        with open(diar_out, encoding="utf-8") as f:
+            segments = json.load(f)
         speakers = set(s["speaker"] for s in segments)
-        print(f"[OK] Detectados {len(speakers)} falantes: {speakers}")
-
+        print(f"[OK] Diarizacao carregada: {len(segments)} segmentos, {len(speakers)} falantes")
         return segments
-
+    except _sp.TimeoutExpired:
+        print("[ERRO] Diarizacao demorou mais de 1 hora - abortando")
+        return None
     except Exception as e:
         print(f"[ERRO] Diarizacao falhou: {e}")
         return None
@@ -674,7 +1047,7 @@ def merge_transcription_with_diarization(transcription_segs, diarization_segs):
 # ETAPA 3: TRANSCRICAO (WHISPER)
 # ============================================================================
 
-def transcribe_faster_whisper(wav_path, workdir, src_lang, model_size="medium", diarize=False, num_speakers=None):
+def transcribe_faster_whisper(wav_path, workdir, src_lang, model_size="medium", diarize=False, num_speakers=None, diarize_engine="pyannote"):
     """Transcricao com Faster-Whisper otimizado
 
     Se src_lang=None, detecta automaticamente o idioma.
@@ -712,7 +1085,10 @@ def transcribe_faster_whisper(wav_path, workdir, src_lang, model_size="medium", 
     else:
         print(f"[INFO] Idioma origem: AUTO-DETECTAR")
 
-    model = WhisperModel(model_size, device=device, compute_type=compute_type)
+    # cpu_threads=4: limita paralelismo interno do ctranslate2 para evitar OOM
+    # (padrao seria todos os CPUs, cada thread aloca buffers proprios = multiplo da RAM)
+    model = WhisperModel(model_size, device=device, compute_type=compute_type,
+                         cpu_threads=4 if device == "cpu" else 0, num_workers=1)
 
     # VAD otimizado para evitar fragmentacao excessiva
     segments_generator, info = model.transcribe(
@@ -725,7 +1101,7 @@ def transcribe_faster_whisper(wav_path, workdir, src_lang, model_size="medium", 
             threshold=0.5,
         ),
         beam_size=5,
-        best_of=5,
+        best_of=1,          # best_of>1 so faz sentido com temperature>0; aqui temperature=0
         temperature=0.0,
         condition_on_previous_text=True,
     )
@@ -762,7 +1138,18 @@ def transcribe_faster_whisper(wav_path, workdir, src_lang, model_size="medium", 
 
     # Diarizacao opcional
     if diarize:
-        diar_segs = diarize_audio(wav_path, workdir, num_speakers)
+        # Liberar modelo Whisper da RAM antes de carregar pyannote (evita OOM)
+        try:
+            del model
+        except Exception:
+            pass
+        _liberar_memoria()
+        print("[INFO] Modelo Whisper liberado da RAM antes da diarizacao")
+        if diarize_engine == "nemo":
+            print("[INFO] Usando diarizacao NeMo (titanet_large)")
+            diar_segs = diarize_audio_nemo(wav_path, workdir, num_speakers)
+        else:
+            diar_segs = diarize_audio(wav_path, workdir, num_speakers)
         if diar_segs:
             segs = merge_transcription_with_diarization(segs, diar_segs)
 
@@ -794,7 +1181,7 @@ def transcribe_faster_whisper(wav_path, workdir, src_lang, model_size="medium", 
 # ETAPA 3B: TRANSCRICAO (OpenAI Whisper via PyTorch) - FALLBACK GPU
 # ============================================================================
 
-def transcribe_openai_whisper(wav_path, workdir, src_lang, model_size="medium", diarize=False, num_speakers=None):
+def transcribe_openai_whisper(wav_path, workdir, src_lang, model_size="medium", diarize=False, num_speakers=None, diarize_engine="pyannote"):
     """Transcricao com OpenAI Whisper original (PyTorch, suporta CUDA nativo).
 
     Usado como fallback quando CTranslate2 nao tem suporte CUDA (ex: ARM64/aarch64).
@@ -857,7 +1244,18 @@ def transcribe_openai_whisper(wav_path, workdir, src_lang, model_size="medium", 
 
     # Diarizacao opcional
     if diarize:
-        diar_segs = diarize_audio(wav_path, workdir, num_speakers)
+        # Liberar modelo Whisper da RAM antes de carregar pyannote (evita OOM)
+        try:
+            del model
+        except Exception:
+            pass
+        _liberar_memoria()
+        print("[INFO] Modelo Whisper liberado da RAM antes da diarizacao")
+        if diarize_engine == "nemo":
+            print("[INFO] Usando diarizacao NeMo (titanet_large)")
+            diar_segs = diarize_audio_nemo(wav_path, workdir, num_speakers)
+        else:
+            diar_segs = diarize_audio(wav_path, workdir, num_speakers)
         if diar_segs:
             segs = merge_transcription_with_diarization(segs, diar_segs)
 
@@ -894,7 +1292,8 @@ def transcribe_openai_whisper(wav_path, workdir, src_lang, model_size="medium", 
 # ============================================================================
 
 def transcribe_parakeet(wav_path, workdir, src_lang=None, model_name="nvidia/parakeet-tdt-1.1b",
-                        segment_pause=0.3, segment_max_words=15):
+                        segment_pause=0.3, segment_max_words=15,
+                        diarize=False, num_speakers=None, diarize_engine="pyannote"):
     """Transcricao com NVIDIA Parakeet (NeMo)
 
     Mais rapido que Whisper, otimizado para GPUs NVIDIA.
@@ -918,7 +1317,10 @@ def transcribe_parakeet(wav_path, workdir, src_lang=None, model_name="nvidia/par
     except ImportError:
         print("[ERRO] NeMo nao instalado. Instale com: pip install nemo_toolkit[asr]")
         print("[WARN] Usando Whisper como fallback...")
-        return transcribe_faster_whisper(wav_path, workdir, src_lang)
+        return transcribe_faster_whisper(wav_path, workdir, src_lang,
+                                         model_size=model_name.split("-")[-1] if "/" not in model_name else "large-v3",
+                                         diarize=diarize, num_speakers=num_speakers,
+                                         diarize_engine=diarize_engine)
 
     import torch
 
@@ -1019,6 +1421,41 @@ def transcribe_parakeet(wav_path, workdir, src_lang=None, model_name="nvidia/par
         }, f, ensure_ascii=False, indent=2)
 
     print(f"[OK] Transcrito: {len(segs)} segmentos")
+
+    # Diarizacao opcional (multi-falante)
+    if diarize:
+        # Liberar modelo Parakeet da RAM/VRAM antes de carregar pyannote (evita OOM)
+        try:
+            del model
+        except Exception:
+            pass
+        _liberar_memoria()
+        print("[INFO] Modelo Parakeet liberado da RAM antes da diarizacao")
+        if diarize_engine == "nemo":
+            print("[INFO] Usando diarizacao NeMo (titanet_large)")
+            diar_segs = diarize_audio_nemo(wav_path, workdir, num_speakers)
+        else:
+            diar_segs = diarize_audio(wav_path, workdir, num_speakers)
+        if diar_segs:
+            segs = merge_transcription_with_diarization(segs, diar_segs)
+            # Atualizar arquivos com info de falante
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "language": detected_lang,
+                    "language_specified": src_lang,
+                    "asr_engine": "parakeet",
+                    "model": model_name,
+                    "diarization": True,
+                    "num_speakers": num_speakers,
+                    "segments": segs,
+                }, f, ensure_ascii=False, indent=2)
+            with open(srt_path, "w", encoding="utf-8") as f:
+                for i, seg in enumerate(segs, 1):
+                    start_ts = ts_stamp(seg["start"])
+                    end_ts = ts_stamp(seg["end"])
+                    speaker_tag = f"[{seg.get('speaker', 'SPEAKER_00')}] " if 'speaker' in seg else ""
+                    f.write(f"{i}\n{start_ts} --> {end_ts}\n{speaker_tag}{seg['text']}\n\n")
+
     return json_path, srt_path, segs, detected_lang
 
 
@@ -3051,6 +3488,8 @@ Exemplos:
     # Diarizacao
     ap.add_argument("--diarize", action="store_true", help="Detectar multiplos falantes")
     ap.add_argument("--num-speakers", type=int, default=None, help="Numero de falantes (auto se nao especificado)")
+    ap.add_argument("--diarize-engine", choices=["pyannote", "nemo"], default="pyannote",
+                    help="Engine de diarizacao: pyannote (padrao) ou nemo (NeMo nativo GPU)")
 
     # Sincronizacao
     ap.add_argument("--sync", choices=["none", "fit", "pad", "smart", "extend"], default="smart",
@@ -3173,7 +3612,10 @@ Exemplos:
             audio_src, workdir, args.src,
             model_name=args.parakeet_model,
             segment_pause=args.segment_pause,
-            segment_max_words=args.segment_max_words
+            segment_max_words=args.segment_max_words,
+            diarize=args.diarize,
+            num_speakers=args.num_speakers,
+            diarize_engine=args.diarize_engine,
         )
     elif args.asr == "whisper":
         # Auto-selecionar: usar OpenAI Whisper (PyTorch GPU) se CTranslate2 nao tem CUDA
@@ -3195,17 +3637,20 @@ Exemplos:
         if use_openai_whisper:
             asr_json, asr_srt, segs, detected_lang = transcribe_openai_whisper(
                 audio_src, workdir, args.src, args.whisper_model,
-                diarize=args.diarize, num_speakers=args.num_speakers
+                diarize=args.diarize, num_speakers=args.num_speakers,
+                diarize_engine=args.diarize_engine,
             )
         else:
             asr_json, asr_srt, segs, detected_lang = transcribe_faster_whisper(
                 audio_src, workdir, args.src, args.whisper_model,
-                diarize=args.diarize, num_speakers=args.num_speakers
+                diarize=args.diarize, num_speakers=args.num_speakers,
+                diarize_engine=args.diarize_engine,
             )
     else:
         asr_json, asr_srt, segs, detected_lang = transcribe_faster_whisper(
             audio_src, workdir, args.src, args.whisper_model,
-            diarize=args.diarize, num_speakers=args.num_speakers
+            diarize=args.diarize, num_speakers=args.num_speakers,
+            diarize_engine=args.diarize_engine,
         )
     save_checkpoint(workdir, 3, "transcription")
     tempos_etapas["3_transcricao"] = time.time() - t_etapa

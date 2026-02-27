@@ -124,6 +124,7 @@ function NewJob() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [syncMode, setSyncMode] = useState("smart");
   const [maxstretch, setMaxstretch] = useState(1.3);
+  const [ttsRate, setTtsRate] = useState("+0%");
   const [seed, setSeed] = useState(42);
 
   // Ollama control
@@ -177,6 +178,7 @@ function NewJob() {
       if (cfg.clone_voice) setCloneVoice(Boolean(cfg.clone_voice));
       if (cfg.sync_mode) setSyncMode(String(cfg.sync_mode));
       if (cfg.maxstretch) setMaxstretch(Number(cfg.maxstretch));
+      if (cfg.tts_rate) setTtsRate(String(cfg.tts_rate));
       if (cfg.seed) setSeed(Number(cfg.seed));
     } catch { /* ignorar parse errors */ }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -212,6 +214,7 @@ function NewJob() {
       if (ct.presets.maxstretch) setMaxstretch(Number(ct.presets.maxstretch));
       setNoTruncate(Boolean(ct.presets.no_truncate));
       setDiarize(Boolean(ct.presets.diarize));
+      setTtsRate(ct.presets.tts_rate ? String(ct.presets.tts_rate) : "+0%");
     }
   }, [contentType, options]);
 
@@ -257,6 +260,7 @@ function NewJob() {
       if (noTruncate) config.no_truncate = true;
       if (cloneVoice) config.clone_voice = true;
       if (tolerance !== undefined) config.tolerance = Number(tolerance);
+      if (ttsRate && ttsRate !== "+0%") config.tts_rate = ttsRate;
 
       const job = uploadFile
         ? await createJobWithUpload(uploadFile, config, (p) => setUploadProgress(p))
@@ -365,6 +369,7 @@ function NewJob() {
                         <div className="mt-2 flex flex-wrap gap-2">
                           {ct.presets.sync && <span className="text-xs bg-gray-700/50 px-2 py-0.5 rounded">sync: {String(ct.presets.sync)}</span>}
                           {ct.presets.maxstretch && <span className="text-xs bg-gray-700/50 px-2 py-0.5 rounded">compressao: {String(Number(ct.presets.maxstretch) * 100 - 100)}%</span>}
+                          {ct.presets.tts_rate && ct.presets.tts_rate !== "+0%" && <span className="text-xs bg-yellow-500/20 text-yellow-400 px-2 py-0.5 rounded">voz: {String(ct.presets.tts_rate)}</span>}
                           {ct.presets.no_truncate && <span className="text-xs bg-green-500/20 text-green-400 px-2 py-0.5 rounded">frases completas</span>}
                           {ct.presets.diarize && <span className="text-xs bg-purple-500/20 text-purple-400 px-2 py-0.5 rounded">multi-falante</span>}
                         </div>
@@ -850,6 +855,25 @@ function NewJob() {
                     {ADVANCED_HELP.noTruncate}
                   </div>
                 )}
+              </div>
+
+              {/* TTS Rate */}
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">
+                  Velocidade da voz: {ttsRate === "+0%" ? "normal" : ttsRate}
+                </label>
+                <input type="range" min="-30" max="50" step="5"
+                  value={parseInt(ttsRate.replace("%", "").replace("+", ""))}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value);
+                    setTtsRate(v >= 0 ? `+${v}%` : `${v}%`);
+                  }}
+                  className="w-full" />
+                <div className="flex justify-between text-xs text-gray-500 mt-1">
+                  <span>-30% (mais lento)</span>
+                  <span>+0% (normal)</span>
+                  <span>+50% (mais rapido)</span>
+                </div>
               </div>
 
               {/* Seed */}

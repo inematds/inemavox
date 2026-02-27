@@ -168,6 +168,13 @@ TRANSLATION_ENGINES = [
 
 CONTENT_TYPES = [
     {
+        "id": "tutorial",
+        "name": "Tutorial / Apresentacao",
+        "description": "Screencast, tutorial, demo, social media. Fala natural, sem cortes.",
+        "detail": "Fala 20% mais rapida para compensar que o portugues e mais longo que o ingles. Se ainda sobrar audio, o video congela o frame ate a fala terminar — sem cortar nenhuma palavra. A melhor opcao para tutoriais curtos onde o conteudo completo e mais importante que o timing exato.",
+        "presets": {"sync": "extend", "maxstretch": 1.5, "no_truncate": True, "tts_rate": "+20%"},
+    },
+    {
         "id": "palestra",
         "name": "Palestra / Talking Head",
         "description": "Vlog, entrevista, podcast com video. Equilibra timing e conteudo.",

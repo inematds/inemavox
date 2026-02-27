@@ -2,6 +2,34 @@
 
 ---
 
+## v1.8.3 — diarização funcionando (2026-02-24)
+
+### Fix diarização (torchaudio 2.10 + pyannote 3.1.1)
+
+Série de patches de compatibilidade para fazer pyannote funcionar com o ecossistema atual:
+
+- **torchaudio 2.9+** substituiu `torchaudio.load()` por TorchCodec (pacote separado não instalado)
+  → fallback automático para `soundfile` quando TorchCodec não disponível
+- **torchaudio 2.9+** removeu `torchaudio.info()` completamente
+  → shim via `soundfile.info()` retornando objeto compatível com `AudioMetaData`
+- **numpy 2.0** removeu `np.NAN` (além de `np.NaN` já corrigido anteriormente)
+  → `np.NAN = np.nan` adicionado ao patch
+- **torchaudio 2.5+** removeu `list_audio_backends()` e `get_audio_backend()`
+  → shims adicionados (`lambda: []` e `lambda: None`)
+- **torchaudio.backend.common** removido (usado em `pyannote/audio/tasks/segmentation/mixins.py`)
+  → try/except com stub de `AudioMetaData`
+- **speechbrain**: chamada a `list_audio_backends()` sem guard → adicionado `hasattr` check
+- **PyTorch 2.6+** mudou default de `weights_only=False` para `True` em `torch.load()`
+  → `lightning_fabric/utilities/cloud_io.py` patcheado para usar `False` em arquivos locais
+- **HF Token tipo errado**: token fine-grained não acessa repos públicos gated
+  → necessário token tipo **Read** (clássico), não fine-grained
+
+### Resultado
+- `SPEAKER_00` e `SPEAKER_01` detectados corretamente em áudio com 2 falantes
+- Edge TTS mapeia automaticamente: `SPEAKER_00` → `AntonioNeural` (M), `SPEAKER_01` → `FranciscaNeural` (F)
+
+---
+
 ## v1.8.2 — post-release fixes (2026-02-24)
 
 ### Fix diarizacao (multiplos falantes)

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { getOllamaStatus, startOllama, stopOllama, getOptions, createCutJob, createCutJobWithUpload } from "@/lib/api";
 
 type OllamaModel = { id: string; name: string; size_gb: number };
@@ -31,18 +31,20 @@ const DEFAULT_TOPIC_SYSTEM =
 const DEFAULT_TOPIC_USER =
   "Analyze this video transcript and identify all distinct topics or subjects discussed.\n\n" +
   "Requirements:\n" +
-  "- Each clip must cover one complete topic or subject area\n" +
-  "- Group related consecutive content about the same topic together\n" +
-  "- Each clip must be between {min_dur} and {max_dur} seconds long\n" +
-  "- Find at most {num_clips} topics (find fewer if there are fewer distinct subjects)\n" +
-  "- Clips must not overlap\n\n" +
+  "- Each clip must cover ONE complete topic or subject area from start to finish\n" +
+  "- Group ALL consecutive content about the same topic into a single clip\n" +
+  "- When the speaker switches to a new subject, start a new clip\n" +
+  "- Clips can be ANY duration — short or long, do NOT split clips to meet a time limit\n" +
+  "- Find at most {num_clips} distinct topics (find fewer if there are fewer distinct subjects)\n" +
+  "- Clips must not overlap and must cover the full transcript with no gaps\n\n" +
   "Transcript:\n{transcript}\n\n" +
   "Respond ONLY with a valid JSON array (no extra text, no markdown):\n" +
   '[\n  {"start": 10.5, "end": 75.2, "reason": "Assunto: Introducao e contexto"},\n' +
-  '  {"start": 120.0, "end": 195.0, "reason": "Assunto: ..."}\n]';
+  '  {"start": 75.2, "end": 300.0, "reason": "Assunto: ..."}\n]';
 
 export default function CutPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [loading, setLoading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -62,7 +64,9 @@ export default function CutPage() {
   const [numClips, setNumClips] = useState(5);
   const [minDuration, setMinDuration] = useState(30);
   const [maxDuration, setMaxDuration] = useState(120);
+  const [asrEngine, setAsrEngine] = useState<"whisper" | "parakeet">("whisper");
   const [whisperModel, setWhisperModel] = useState("large-v3");
+  const [parakeetModel, setParakeetModel] = useState("nvidia/parakeet-tdt-1.1b");
 
   // Prompts — viral
   const [viralSystem, setViralSystem] = useState(DEFAULT_VIRAL_SYSTEM);
@@ -86,13 +90,49 @@ export default function CutPage() {
   const [ollamaLoading, setOllamaLoading] = useState(false);
   const [ollamaSort, setOllamaSort] = useState<"size" | "name">("size");
 
-  // Whisper models
+  // ASR options
   const [whisperModels, setWhisperModels] = useState<{ id: string; name: string; quality: string }[]>([]);
+  const [asrEngines, setAsrEngines] = useState<{ id: string; name: string; description: string }[]>([]);
 
   useEffect(() => {
     getOptions().then((opts) => {
       if (opts.whisper_models) setWhisperModels(opts.whisper_models);
+      if (opts.asr_engines) setAsrEngines(opts.asr_engines);
     }).catch(() => {});
+  }, []);
+
+  // Pre-preencher a partir de ?prefill= (retry de job existente)
+  useEffect(() => {
+    const raw = searchParams.get("prefill");
+    if (!raw) return;
+    try {
+      const cfg = JSON.parse(decodeURIComponent(raw)) as Record<string, unknown>;
+      if (cfg.input && typeof cfg.input === "string") setInput(cfg.input);
+      if (cfg.timestamps) setTimestamps(String(cfg.timestamps));
+      // Se mode é viral ou topics, muda para IA
+      if (cfg.mode === "viral") { setMode("viral"); setAnalysisMode("viral"); }
+      if (cfg.mode === "topics") { setMode("viral"); setAnalysisMode("topics"); }
+      if (cfg.num_clips) setNumClips(Number(cfg.num_clips));
+      if (cfg.min_duration) setMinDuration(Number(cfg.min_duration));
+      if (cfg.max_duration) setMaxDuration(Number(cfg.max_duration));
+      if (cfg.asr_engine) setAsrEngine(cfg.asr_engine as "whisper" | "parakeet");
+      if (cfg.whisper_model) setWhisperModel(String(cfg.whisper_model));
+      if (cfg.parakeet_model) setParakeetModel(String(cfg.parakeet_model));
+      if (cfg.llm_provider) setLlmProvider(cfg.llm_provider as typeof llmProvider);
+      if (cfg.ollama_model) setOllamaModel(String(cfg.ollama_model));
+      if (cfg.llm_model) setLlmModel(String(cfg.llm_model));
+      if (cfg.llm_api_key) setLlmApiKey(String(cfg.llm_api_key));
+      if (cfg.llm_base_url) setLlmBaseUrl(String(cfg.llm_base_url));
+      if (cfg.system_prompt) {
+        if (cfg.mode === "topics") setTopicSystem(String(cfg.system_prompt));
+        else setViralSystem(String(cfg.system_prompt));
+      }
+      if (cfg.user_prompt) {
+        if (cfg.mode === "topics") setTopicUser(String(cfg.user_prompt));
+        else setViralUser(String(cfg.user_prompt));
+      }
+    } catch { /* ignorar parse errors */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const refreshOllamaStatus = async () => {
@@ -121,20 +161,30 @@ export default function CutPage() {
     setUploadProgress(null);
 
     try {
+      // When AI mode, use "topics" or "viral" based on analysisMode
+      const effectiveMode = mode === "viral" ? analysisMode : mode;
       const config: Record<string, unknown> = {
         input: uploadFile ? uploadFile.name : input,
-        mode,
+        mode: effectiveMode,
       };
 
       if (mode === "manual") {
         if (!timestamps.trim()) throw new Error("Informe os timestamps no modo manual");
         config.timestamps = timestamps.trim();
       } else {
-        // num_clips: for topics with 0 (auto), send 20 as upper bound
-        config.num_clips = analysisMode === "topics" && numClips === 0 ? 20 : numClips;
-        config.min_duration = minDuration;
-        config.max_duration = maxDuration;
-        config.whisper_model = whisperModel;
+        // num_clips: for topics with 0 (auto), send 50 as upper bound
+        config.num_clips = analysisMode === "topics" && numClips === 0 ? 50 : numClips;
+        // topics mode: no duration constraints — any size clip is ok
+        if (analysisMode === "viral") {
+          config.min_duration = minDuration;
+          config.max_duration = maxDuration;
+        }
+        config.asr_engine = asrEngine;
+        if (asrEngine === "parakeet") {
+          config.parakeet_model = parakeetModel;
+        } else {
+          config.whisper_model = whisperModel;
+        }
         config.llm_provider = llmProvider;
         if (llmProvider === "ollama") {
           config.ollama_model = ollamaModel;
@@ -185,6 +235,12 @@ export default function CutPage() {
         <h1 className="text-3xl font-bold mb-2">Cortar Video</h1>
         <p className="text-gray-400">Extraia clips por timestamps manuais ou deixe a IA identificar os momentos certos</p>
       </div>
+
+      {searchParams.get("prefill") && (
+        <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4 mb-6 text-blue-300 text-sm">
+          Configuracao carregada do job anterior. Altere o que quiser antes de reenviar.
+        </div>
+      )}
 
       {error && (
         <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4 mb-6 text-red-400">{error}</div>
@@ -305,51 +361,85 @@ export default function CutPage() {
             )}
 
             {/* Clips / topics count + duration */}
-            <div className="grid grid-cols-3 gap-4">
+            <div className={`grid gap-4 ${analysisMode === "topics" ? "grid-cols-1 max-w-xs" : "grid-cols-3"}`}>
               <div>
                 <label className="block text-sm text-gray-400 mb-1">
-                  {analysisMode === "topics" ? "Max. topicos (0 = auto)" : "Numero de clips"}
+                  {analysisMode === "topics" ? "Max. assuntos (0 = auto)" : "Numero de clips"}
                 </label>
                 <input
                   type="number" min={0} max={analysisMode === "topics" ? 50 : 20} value={numClips}
                   onChange={(e) => setNumClips(Number(e.target.value))}
                   className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white"
                 />
+                {analysisMode === "topics" && (
+                  <p className="text-xs text-gray-500 mt-1">0 = identifica todos os assuntos automaticamente</p>
+                )}
               </div>
-              <div>
-                <label className="block text-sm text-gray-400 mb-1">Min. duracao (s)</label>
-                <input
-                  type="number" min={5} max={600} value={minDuration}
-                  onChange={(e) => setMinDuration(Number(e.target.value))}
-                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white"
-                />
-              </div>
-              <div>
-                <label className="block text-sm text-gray-400 mb-1">Max. duracao (s)</label>
-                <input
-                  type="number" min={5} max={600} value={maxDuration}
-                  onChange={(e) => setMaxDuration(Number(e.target.value))}
-                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white"
-                />
-              </div>
+              {analysisMode === "viral" && (
+                <>
+                  <div>
+                    <label className="block text-sm text-gray-400 mb-1">Min. duracao (s)</label>
+                    <input
+                      type="number" min={5} max={600} value={minDuration}
+                      onChange={(e) => setMinDuration(Number(e.target.value))}
+                      className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-400 mb-1">Max. duracao (s)</label>
+                    <input
+                      type="number" min={5} max={600} value={maxDuration}
+                      onChange={(e) => setMaxDuration(Number(e.target.value))}
+                      className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white"
+                    />
+                  </div>
+                </>
+              )}
             </div>
 
             {/* Whisper model */}
+            {/* ASR Engine */}
             <div>
-              <label className="block text-sm text-gray-400 mb-1">Modelo Whisper (transcricao)</label>
-              <select value={whisperModel} onChange={(e) => setWhisperModel(e.target.value)}
-                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white">
-                {whisperModels.length > 0
-                  ? whisperModels.map((m) => (
-                    <option key={m.id} value={m.id}>{m.name} - {m.quality}</option>
-                  ))
-                  : <>
-                    <option value="large-v3">large-v3 - Alta qualidade</option>
-                    <option value="medium">medium - Balanceado</option>
-                    <option value="small">small - Rapido</option>
-                  </>
-                }
-              </select>
+              <label className="block text-sm text-gray-400 mb-2">Motor de Transcricao (ASR)</label>
+              <div className="flex gap-2 mb-2">
+                {(asrEngines.length > 0 ? asrEngines : [
+                  { id: "whisper", name: "Whisper", description: "Multi-idioma" },
+                  { id: "parakeet", name: "Parakeet", description: "Ingles, mais rapido" },
+                ]).map((eng) => (
+                  <button key={eng.id} type="button" onClick={() => setAsrEngine(eng.id as "whisper" | "parakeet")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                      asrEngine === eng.id
+                        ? "bg-blue-500/20 border-blue-500/50 text-blue-300"
+                        : "bg-gray-900 border-gray-700 text-gray-400 hover:border-gray-500"
+                    }`}>
+                    {eng.name}
+                    <span className="ml-1 text-gray-500">— {eng.description}</span>
+                  </button>
+                ))}
+              </div>
+              {asrEngine === "whisper" && (
+                <select value={whisperModel} onChange={(e) => setWhisperModel(e.target.value)}
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white">
+                  {whisperModels.length > 0
+                    ? whisperModels.map((m) => (
+                      <option key={m.id} value={m.id}>{m.name} - {m.quality}</option>
+                    ))
+                    : <>
+                      <option value="large-v3">large-v3 - Alta qualidade</option>
+                      <option value="medium">medium - Balanceado</option>
+                      <option value="small">small - Rapido</option>
+                    </>
+                  }
+                </select>
+              )}
+              {asrEngine === "parakeet" && (
+                <select value={parakeetModel} onChange={(e) => setParakeetModel(e.target.value)}
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white">
+                  <option value="nvidia/parakeet-tdt-1.1b">parakeet-tdt-1.1b (recomendado)</option>
+                  <option value="nvidia/parakeet-ctc-1.1b">parakeet-ctc-1.1b (mais rapido)</option>
+                  <option value="nvidia/parakeet-rnnt-1.1b">parakeet-rnnt-1.1b (mais preciso)</option>
+                </select>
+              )}
             </div>
 
             {/* LLM Provider selector */}
