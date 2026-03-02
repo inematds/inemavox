@@ -177,15 +177,34 @@ def main():
             "merge_output_format": "mp4",
         }
 
-    # Para URLs do Facebook: adicionar impersonacao de browser (necessario para evitar bloqueio)
+    # Para URLs do Facebook: adicionar impersonacao + cookies do browser do usuario
     is_facebook = "facebook.com" in url or "fb.com" in url
+    is_reel = "/reel/" in url or "/share/r/" in url
     if is_facebook:
         try:
             from yt_dlp.networking.impersonate import ImpersonateTarget
             ydl_opts["impersonate"] = ImpersonateTarget("chrome", None, None, None)
-            print("[baixar] Facebook detectado: usando impersonacao de browser", flush=True)
         except ImportError:
-            pass  # curl-cffi nao disponivel, continuar sem impersonacao
+            pass
+        # Tentar cookies do Firefox (onde o usuario pode estar logado no Facebook)
+        for browser in ("firefox", "chrome", "chromium"):
+            try:
+                import yt_dlp as _ydl_test
+                test_opts = dict(ydl_opts, cookiesfrombrowser=(browser, None, None, None), quiet=True)
+                with _ydl_test.YoutubeDL(test_opts) as ydl_test:
+                    # Verificar se o browser tem cookies do Facebook
+                    cj = ydl_test.cookiejar
+                    fb_cookies = [c for c in cj if 'facebook' in c.domain]
+                    if fb_cookies:
+                        print(f"[baixar] Facebook: usando cookies do {browser} ({len(fb_cookies)} cookies)", flush=True)
+                        ydl_opts["cookiesfrombrowser"] = (browser, None, None, None)
+                        break
+            except Exception:
+                pass
+        else:
+            if is_reel:
+                print("[baixar] Facebook Reel: sem cookies de browser — pode falhar", flush=True)
+                print("[baixar] Dica: faca login no Facebook no Firefox para melhorar o download", flush=True)
 
     print("[baixar] Iniciando download...", flush=True)
     try:
@@ -195,11 +214,9 @@ def main():
         err_str = str(e)
         if "Cannot parse data" in err_str and is_facebook:
             print(
-                "[baixar] ERRO: Facebook bloqueou o download (Cannot parse data).\n"
-                "[baixar] Este e um bug conhecido do yt-dlp com o Facebook (issue #15161).\n"
-                "[baixar] Alternativas:\n"
-                "[baixar]   1. Baixe o video manualmente e use 'Arquivo Local' na pagina de download\n"
-                "[baixar]   2. Tente com um link share/v/ (video normal) em vez de share/r/ (reel)",
+                "[baixar] ERRO: Facebook bloqueou o download (requer login).\n"
+                "[baixar] Solucao: faca login no Facebook no Firefox e tente novamente.\n"
+                "[baixar] Alternativa: use fdownloader.net para baixar e depois 'Arquivo Local'.",
                 flush=True,
             )
         else:
