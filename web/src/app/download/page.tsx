@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { createDownloadJob, createDownloadJobWithUpload } from "@/lib/api";
 
 const QUALITY_OPTIONS = [
@@ -22,8 +22,9 @@ const SUPPORTED_SITES = [
   { name: "+1000 sites",color: "text-gray-400" },
 ];
 
-export default function DownloadPage() {
+function DownloadPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [mode, setMode] = useState<"url" | "file">("url");
   const [url, setUrl] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -31,6 +32,18 @@ export default function DownloadPage() {
   const [loading, setLoading] = useState(false);
   const [uploadPct, setUploadPct] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [prefilled, setPrefilled] = useState(false);
+
+  useEffect(() => {
+    const raw = searchParams.get("prefill");
+    if (!raw) return;
+    try {
+      const cfg = JSON.parse(decodeURIComponent(raw));
+      if (cfg.url) { setUrl(cfg.url); setMode("url"); }
+      if (cfg.quality) setQuality(cfg.quality);
+      setPrefilled(true);
+    } catch { /* ignorar parse errors */ }
+  }, [searchParams]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -66,6 +79,12 @@ export default function DownloadPage() {
         <h1 className="text-3xl font-bold mb-2">Baixar / Converter Video</h1>
         <p className="text-gray-400">Cole um link ou envie um arquivo para extrair audio ou mudar a qualidade</p>
       </div>
+
+      {prefilled && (
+        <div className="mb-4 px-4 py-2 bg-blue-500/10 border border-blue-500/30 rounded-lg text-blue-300 text-sm">
+          Configuracao restaurada do job anterior
+        </div>
+      )}
 
       {/* Mode toggle */}
       <div className="flex gap-1 bg-gray-900 border border-gray-800 rounded-lg p-1 mb-6">
@@ -209,5 +228,13 @@ export default function DownloadPage() {
         </button>
       </form>
     </div>
+  );
+}
+
+export default function DownloadPage() {
+  return (
+    <Suspense>
+      <DownloadPageInner />
+    </Suspense>
   );
 }
