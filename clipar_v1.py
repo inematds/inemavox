@@ -320,6 +320,27 @@ def transcribe_parakeet(audio_path: Path, model: str = "nvidia/parakeet-tdt-1.1b
     return segs
 
 
+def _compact_segments(segments: list[dict], target_chunk_secs: float = 30.0) -> list[dict]:
+    """Junta segmentos curtos do Whisper em blocos de ~30s para reduzir tokens no prompt.
+
+    Whisper gera centenas de segmentos de 2-5s. Para o LLM identificar assuntos
+    é mais eficiente ter blocos de 30s do que 500+ segmentos individuais.
+    """
+    if not segments:
+        return segments
+    merged = []
+    cur = {"start": segments[0]["start"], "end": segments[0]["end"], "text": segments[0]["text"]}
+    for seg in segments[1:]:
+        if seg["end"] - cur["start"] < target_chunk_secs:
+            cur["end"] = seg["end"]
+            cur["text"] = cur["text"] + " " + seg["text"]
+        else:
+            merged.append(cur)
+            cur = {"start": seg["start"], "end": seg["end"], "text": seg["text"]}
+    merged.append(cur)
+    return merged
+
+
 def _build_prompts(
     segments: list[dict],
     num_clips: int,
@@ -330,9 +351,12 @@ def _build_prompts(
     topics_mode: bool = False,
 ) -> tuple[str, str]:
     """Retorna (system_prompt, user_prompt) com suporte a customização."""
+    # Compacta segmentos para reduzir tokens (Whisper gera centenas de segs de 2-5s)
+    compacted = _compact_segments(segments, target_chunk_secs=30.0)
+    print(f"[prompts] Transcript: {len(segments)} segs → {len(compacted)} blocos de ~30s", flush=True)
     transcript_text = "\n".join(
         f"[{seg['start']:.1f}s - {seg['end']:.1f}s] {seg['text']}"
-        for seg in segments
+        for seg in compacted
     )
     if topics_mode:
         system = (custom_system or DEFAULT_TOPICS_SYSTEM_PROMPT).strip()
@@ -380,8 +404,19 @@ def _parse_llm_response(content: str, provider: str) -> list[dict]:
     raise RuntimeError(f"Nao foi possivel parsear resposta do LLM ({provider}): {content[:300]}")
 
 
+def _estimate_tokens(text: str) -> int:
+    """Estimativa rapida de tokens (1 token ≈ 4 chars)."""
+    return len(text) // 4
+
+
 def _call_ollama(system: str, user: str, model: str, ollama_url: str) -> str:
     """Chama Ollama com streaming. timeout=None = sem limite (modelo pode demorar horas)."""
+    # Ajusta num_ctx dinamicamente: min 8k, max 128k, baseado no tamanho real do prompt
+    prompt_tokens = _estimate_tokens(system + user)
+    # Arredonda para cima para o próximo múltiplo de 8192, com margem para a resposta
+    num_ctx = max(8192, min(131072, ((prompt_tokens + 4096) // 8192 + 1) * 8192))
+    print(f"[llm] prompt ~{prompt_tokens} tokens → num_ctx={num_ctx}", flush=True)
+
     payload = {
         "model": model,
         "messages": [
@@ -389,7 +424,7 @@ def _call_ollama(system: str, user: str, model: str, ollama_url: str) -> str:
             {"role": "user", "content": user},
         ],
         "stream": True,
-        "options": {"temperature": 0.3},
+        "options": {"temperature": 0.3, "num_ctx": num_ctx},
     }
     req = urllib.request.Request(
         f"{ollama_url}/api/chat",
