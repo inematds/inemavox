@@ -6,6 +6,7 @@ import argparse
 import json
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 
@@ -113,7 +114,25 @@ def main():
         return
 
     # --- Download via URL ---
-    print(f"[baixar] URL: {args.url}", flush=True)
+    url = args.url
+
+    # Resolver redirect de URLs curtas do Facebook (share/r/, share/v/, etc.)
+    # O extrator do Facebook falha com essas URLs — precisa da URL real do video
+    if "facebook.com/share/" in url:
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"},
+            )
+            resp = urllib.request.urlopen(req, timeout=15)
+            resolved = resp.url
+            if resolved != url:
+                print(f"[baixar] URL Facebook resolvida: {resolved}", flush=True)
+                url = resolved
+        except Exception as e:
+            print(f"[baixar] Aviso: nao foi possivel resolver redirect ({e}), tentando URL original", flush=True)
+
+    print(f"[baixar] URL: {url}", flush=True)
 
     try:
         import yt_dlp
@@ -158,9 +177,34 @@ def main():
             "merge_output_format": "mp4",
         }
 
+    # Para URLs do Facebook: adicionar impersonacao de browser (necessario para evitar bloqueio)
+    is_facebook = "facebook.com" in url or "fb.com" in url
+    if is_facebook:
+        try:
+            from yt_dlp.networking.impersonate import ImpersonateTarget
+            ydl_opts["impersonate"] = ImpersonateTarget("chrome", None, None, None)
+            print("[baixar] Facebook detectado: usando impersonacao de browser", flush=True)
+        except ImportError:
+            pass  # curl-cffi nao disponivel, continuar sem impersonacao
+
     print("[baixar] Iniciando download...", flush=True)
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([args.url])
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+    except Exception as e:
+        err_str = str(e)
+        if "Cannot parse data" in err_str and is_facebook:
+            print(
+                "[baixar] ERRO: Facebook bloqueou o download (Cannot parse data).\n"
+                "[baixar] Este e um bug conhecido do yt-dlp com o Facebook (issue #15161).\n"
+                "[baixar] Alternativas:\n"
+                "[baixar]   1. Baixe o video manualmente e use 'Arquivo Local' na pagina de download\n"
+                "[baixar]   2. Tente com um link share/v/ (video normal) em vez de share/r/ (reel)",
+                flush=True,
+            )
+        else:
+            print(f"[baixar] ERRO: {err_str}", flush=True)
+        sys.exit(1)
 
     # Verificar se arquivo foi criado
     files = list(outdir.glob("video.*"))
