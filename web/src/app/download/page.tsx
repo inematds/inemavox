@@ -34,6 +34,10 @@ function DownloadPageInner() {
   const [error, setError] = useState<string | null>(null);
   const [prefilled, setPrefilled] = useState(false);
 
+  const isFacebookReel = mode === "url" && (
+    url.includes("/share/r/") || url.includes("/reel/")
+  );
+
   useEffect(() => {
     const raw = searchParams.get("prefill");
     if (!raw) return;
@@ -134,6 +138,22 @@ function DownloadPageInner() {
               autoFocus
             />
             <p className="text-xs text-gray-500 mt-2">Suporta qualquer plataforma compativel com yt-dlp</p>
+
+            {isFacebookReel && (
+              <div className="mt-3 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg text-sm text-yellow-300">
+                <strong>⚠ Facebook Reel</strong> — Downloads de Reels requerem login.{" "}
+                Se falhar, baixe em{" "}
+                <a
+                  href="https://fdownloader.net"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline text-yellow-200 hover:text-white"
+                >
+                  fdownloader.net
+                </a>{" "}
+                e use <strong>Arquivo Local</strong>.
+              </div>
+            )}
           </section>
         )}
 
