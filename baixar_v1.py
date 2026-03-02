@@ -3,6 +3,7 @@
    Tambem converte/extrai audio de arquivos locais via ffmpeg."""
 
 import argparse
+import glob as _glob
 import json
 import subprocess
 import sys
@@ -66,6 +67,26 @@ def process_local_file(local_file: Path, quality: str, outdir: Path) -> Path:
             raise RuntimeError(f"ffmpeg falhou: {result.stderr[-400:]}")
 
     return out_path
+
+
+def _find_firefox_profile() -> str | None:
+    """Detecta o profile padrao do Firefox, incluindo instalacoes via snap."""
+    import os
+    candidates = [
+        # Firefox snap (Ubuntu)
+        os.path.expanduser("~/snap/firefox/common/.mozilla/firefox"),
+        # Firefox normal
+        os.path.expanduser("~/.mozilla/firefox"),
+    ]
+    for base in candidates:
+        if not Path(base).exists():
+            continue
+        # Preferir profile com cookies.sqlite
+        profiles = _glob.glob(f"{base}/*.default*") + _glob.glob(f"{base}/*.default")
+        for p in sorted(profiles):
+            if Path(p, "cookies.sqlite").exists():
+                return p
+    return None
 
 
 def main():
@@ -177,7 +198,7 @@ def main():
             "merge_output_format": "mp4",
         }
 
-    # Para URLs do Facebook: impersonacao + cookies (se disponiveis no servidor)
+    # Para URLs do Facebook: impersonacao + cookies do Firefox
     is_facebook = "facebook.com" in url or "fb.com" in url
     is_reel = "/reel/" in url or "/share/r/" in url
     if is_facebook:
@@ -186,13 +207,19 @@ def main():
             ydl_opts["impersonate"] = ImpersonateTarget("chrome", None, None, None)
         except ImportError:
             pass
-        # Verificar se existe arquivo de cookies exportado pelo usuario
+
+        # Tentar cookies do Firefox (incluindo instalacao via snap)
+        firefox_profile = _find_firefox_profile()
         cookies_file = Path(__file__).parent / "facebook_cookies.txt"
-        if cookies_file.exists():
+
+        if firefox_profile:
+            ydl_opts["cookiesfrombrowser"] = ("firefox", firefox_profile, None, None)
+            print(f"[baixar] Facebook: usando cookies do Firefox ({Path(firefox_profile).name})", flush=True)
+        elif cookies_file.exists():
             ydl_opts["cookiefile"] = str(cookies_file)
             print(f"[baixar] Facebook: usando cookies de {cookies_file.name}", flush=True)
         elif is_reel:
-            print("[baixar] Facebook Reel detectado — download pode falhar sem login", flush=True)
+            print("[baixar] Facebook Reel detectado — faca login no Firefox para melhor resultado", flush=True)
 
     print("[baixar] Iniciando download...", flush=True)
     try:
