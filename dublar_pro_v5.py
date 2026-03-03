@@ -1088,7 +1088,7 @@ def transcribe_faster_whisper(wav_path, workdir, src_lang, model_size="medium", 
     # cpu_threads=4: limita paralelismo interno do ctranslate2 para evitar OOM
     # (padrao seria todos os CPUs, cada thread aloca buffers proprios = multiplo da RAM)
     model = WhisperModel(model_size, device=device, compute_type=compute_type,
-                         cpu_threads=4 if device == "cpu" else 0, num_workers=1)
+                         cpu_threads=16 if device == "cpu" else 0, num_workers=1)
 
     # VAD otimizado para evitar fragmentacao excessiva
     segments_generator, info = model.transcribe(
@@ -1103,7 +1103,9 @@ def transcribe_faster_whisper(wav_path, workdir, src_lang, model_size="medium", 
         beam_size=5,
         best_of=1,          # best_of>1 so faz sentido com temperature>0; aqui temperature=0
         temperature=0.0,
-        condition_on_previous_text=True,
+        condition_on_previous_text=False,   # evita loop de alucinacao entre chunks
+        no_speech_threshold=0.6,            # descarta silencio/ruido antes de alucinar
+        compression_ratio_threshold=2.0,    # detecta e descarta texto repetitivo (padrao=2.4)
     )
 
     # Idioma detectado (ou o especificado)
@@ -1216,8 +1218,9 @@ def transcribe_openai_whisper(wav_path, workdir, src_lang, model_size="medium", 
         beam_size=5,
         best_of=1,
         temperature=0.0,
-        condition_on_previous_text=True,
+        condition_on_previous_text=False,   # evita loop de alucinacao entre chunks
         fp16=(device == "cuda"),
+        no_repeat_ngram_size=5,             # penaliza n-grams repetidos
     )
 
     detected_lang = result.get("language", src_lang)

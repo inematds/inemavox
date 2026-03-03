@@ -164,6 +164,9 @@ def transcribe_whisper(audio_path: Path, model: str, src_lang: str | None) -> li
         str(audio_path),
         language=src_lang or None,
         vad_filter=True,
+        condition_on_previous_text=False,   # evita loop de alucinacao entre chunks
+        no_speech_threshold=0.6,            # descarta silencio/ruido antes de alucinar
+        compression_ratio_threshold=2.0,    # detecta e descarta texto repetitivo
     )
 
     results = []
