@@ -148,6 +148,59 @@ def transcribe_whisper_gpu(audio_path: Path, model: str, src_lang: str | None) -
     return segments
 
 
+def _chatterbox_has_nemo() -> bool:
+    """Verifica se NeMo esta instalado no conda chatterbox."""
+    if not Path(CHATTERBOX_PYTHON).exists():
+        return False
+    try:
+        result = subprocess.run(
+            [CHATTERBOX_PYTHON, "-c", "import nemo.collections.asr; print('1')"],
+            capture_output=True, text=True, timeout=20,
+        )
+        return result.stdout.strip() == "1"
+    except Exception:
+        return False
+
+
+def transcribe_parakeet_gpu(audio_path: Path, model: str, src_lang: str | None) -> list[dict]:
+    """Transcreve via parakeet_worker.py no conda chatterbox (GPU + NeMo)."""
+    worker_script = Path(__file__).parent / "parakeet_worker.py"
+    output_json = audio_path.parent / "parakeet_result.json"
+
+    cmd = [
+        CHATTERBOX_PYTHON, str(worker_script),
+        "--audio", str(audio_path),
+        "--model", model,
+        "--output-json", str(output_json),
+    ]
+
+    print(f"[transcription] Transcrevendo com Parakeet GPU ({model})...", flush=True)
+    result = subprocess.run(cmd, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"parakeet_worker retornou codigo {result.returncode}")
+
+    data = json.loads(output_json.read_text(encoding="utf-8"))
+    segments = data["segments"]
+
+    for seg in segments:
+        print(f"  [{seg['start']:.1f}s -> {seg['end']:.1f}s] {seg['text']}", flush=True)
+
+    print(f"[transcription] {len(segments)} segmentos, idioma: {data.get('language', 'en')}", flush=True)
+    return segments
+
+
+def transcribe_parakeet(audio_path: Path, model: str, src_lang: str | None) -> list[dict]:
+    """Transcreve com Parakeet. Usa GPU via conda env se NeMo disponivel, senao Whisper GPU."""
+    if _chatterbox_has_nemo():
+        try:
+            return transcribe_parakeet_gpu(audio_path, model, src_lang)
+        except Exception as e:
+            print(f"[transcription] Parakeet GPU falhou ({e}), usando Whisper GPU...", flush=True)
+    else:
+        print("[transcription] NeMo nao disponivel — usando Whisper GPU como fallback", flush=True)
+    return transcribe_whisper_gpu(audio_path, "large-v3", src_lang)
+
+
 def transcribe_whisper(audio_path: Path, model: str, src_lang: str | None) -> list[dict]:
     """Transcreve com Whisper. Usa GPU via conda env se disponivel, senao faster-whisper CPU."""
     if _chatterbox_has_cuda():
@@ -257,6 +310,7 @@ def main():
     parser.add_argument("--outdir", required=True, help="Diretorio de saida para transcricoes")
     parser.add_argument("--asr", default="whisper", choices=["whisper", "parakeet"])
     parser.add_argument("--whisper-model", default="large-v3", dest="whisper_model")
+    parser.add_argument("--parakeet-model", default="nvidia/parakeet-tdt-1.1b", dest="parakeet_model")
     parser.add_argument("--src", default=None, help="Idioma de origem (auto-detect se vazio)")
     args = parser.parse_args()
 
@@ -279,11 +333,10 @@ def main():
         write_checkpoint(workdir, 2, "extraction", "Extracao de audio")
 
         # Etapa 3: Transcription
-        if args.asr == "whisper":
-            segments = transcribe_whisper(audio, args.whisper_model, args.src)
+        if args.asr == "parakeet":
+            segments = transcribe_parakeet(audio, args.parakeet_model or "nvidia/parakeet-tdt-1.1b", args.src)
         else:
-            # parakeet - fallback para whisper por enquanto
-            segments = transcribe_whisper(audio, "large-v3", "en")
+            segments = transcribe_whisper(audio, args.whisper_model, args.src)
         write_checkpoint(workdir, 3, "transcription", "Transcricao")
 
         # Etapa 4: Export

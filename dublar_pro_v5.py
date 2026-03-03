@@ -1044,6 +1044,97 @@ def merge_transcription_with_diarization(transcription_segs, diarization_segs):
     return merged
 
 # ============================================================================
+# ETAPA 3: TRANSCRICAO — WORKERS GPU (subprocess no conda chatterbox)
+# ============================================================================
+
+_CHATTERBOX_PYTHON = os.environ.get(
+    "CHATTERBOX_PYTHON",
+    "/home/nmaldaner/miniconda3/envs/chatterbox/bin/python3",
+)
+
+
+def _chatterbox_has_cuda():
+    """Verifica se o conda env chatterbox tem CUDA disponivel."""
+    import subprocess as _sp
+    if not os.path.exists(_CHATTERBOX_PYTHON):
+        return False
+    try:
+        r = _sp.run(
+            [_CHATTERBOX_PYTHON, "-c", "import torch; print('1' if torch.cuda.is_available() else '0')"],
+            capture_output=True, text=True, timeout=15,
+        )
+        return r.stdout.strip() == "1"
+    except Exception:
+        return False
+
+
+def _chatterbox_has_nemo():
+    """Verifica se NeMo esta instalado no conda chatterbox."""
+    import subprocess as _sp
+    if not os.path.exists(_CHATTERBOX_PYTHON):
+        return False
+    try:
+        r = _sp.run(
+            [_CHATTERBOX_PYTHON, "-c", "import nemo.collections.asr; print('1')"],
+            capture_output=True, text=True, timeout=20,
+        )
+        return r.stdout.strip() == "1"
+    except Exception:
+        return False
+
+
+def _transcribe_whisper_gpu_worker(wav_path, workdir, src_lang, model_size):
+    """Transcreve via whisper_gpu_worker.py no conda chatterbox (GPU)."""
+    import subprocess as _sp
+    worker = os.path.join(os.path.dirname(__file__), "whisper_gpu_worker.py")
+    output_json = os.path.join(workdir, "whisper_gpu_result.json")
+
+    cmd = [
+        _CHATTERBOX_PYTHON, worker,
+        "--audio", str(wav_path),
+        "--model", model_size,
+        "--output-json", output_json,
+    ]
+    if src_lang:
+        cmd += ["--lang", src_lang]
+
+    print(f"[whisper_gpu] Transcrevendo com Whisper GPU ({model_size})...", flush=True)
+    result = _sp.run(cmd, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"whisper_gpu_worker falhou (codigo {result.returncode})")
+
+    import json as _json
+    data = _json.loads(open(output_json, encoding="utf-8").read())
+    return data["segments"], data.get("language", src_lang or "?")
+
+
+def _transcribe_parakeet_gpu_worker(wav_path, workdir, src_lang, model_name,
+                                    segment_pause=0.3, segment_max_words=15):
+    """Transcreve via parakeet_worker.py no conda chatterbox (GPU + NeMo)."""
+    import subprocess as _sp
+    worker = os.path.join(os.path.dirname(__file__), "parakeet_worker.py")
+    output_json = os.path.join(workdir, "parakeet_result.json")
+
+    cmd = [
+        _CHATTERBOX_PYTHON, worker,
+        "--audio", str(wav_path),
+        "--model", model_name,
+        "--output-json", output_json,
+        "--segment-pause", str(segment_pause),
+        "--segment-max-words", str(segment_max_words),
+    ]
+
+    print(f"[parakeet_gpu] Transcrevendo com Parakeet GPU ({model_name})...", flush=True)
+    result = _sp.run(cmd, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"parakeet_worker falhou (codigo {result.returncode})")
+
+    import json as _json
+    data = _json.loads(open(output_json, encoding="utf-8").read())
+    return data["segments"], data.get("language", "en")
+
+
+# ============================================================================
 # ETAPA 3: TRANSCRICAO (WHISPER)
 # ============================================================================
 
@@ -1054,8 +1145,17 @@ def transcribe_faster_whisper(wav_path, workdir, src_lang, model_size="medium", 
     Retorna: (json_path, srt_path, segments, detected_language)
     """
     print("\n" + "="*60)
-    print("=== ETAPA 3: Transcricao (Faster-Whisper) ===")
+    print("=== ETAPA 3: Transcricao (Whisper) ===")
     print("="*60)
+
+    # Tentar GPU via worker chatterbox primeiro
+    if _chatterbox_has_cuda():
+        try:
+            raw_segs, detected_lang = _transcribe_whisper_gpu_worker(wav_path, workdir, src_lang, model_size)
+            return _finish_whisper_transcription(raw_segs, detected_lang, src_lang, workdir,
+                                                 diarize, num_speakers, diarize_engine)
+        except Exception as e:
+            print(f"[WARN] Whisper GPU falhou ({e}), usando CPU como fallback...", flush=True)
 
     from faster_whisper import WhisperModel
     import torch
@@ -1071,7 +1171,6 @@ def transcribe_faster_whisper(wav_path, workdir, src_lang, model_size="medium", 
                 device = "cuda"
                 compute_type = "float16" if "float16" in cuda_types else "int8_float16" if "int8_float16" in cuda_types else "int8"
         except (ValueError, Exception):
-            # CTranslate2 sem CUDA (aarch64) - manter CPU
             pass
 
     print(f"[INFO] Whisper modelo: {model_size}")
@@ -1138,15 +1237,17 @@ def transcribe_faster_whisper(wav_path, workdir, src_lang, model_size="medium", 
     if segs_antes != segs_depois:
         print(f"[INFO] Merge de frases incompletas: {segs_antes} -> {segs_depois} segmentos")
 
-    # Diarizacao opcional
-    if diarize:
-        # Liberar modelo Whisper da RAM antes de carregar pyannote (evita OOM)
-        try:
-            del model
-        except Exception:
-            pass
+    return _finish_whisper_transcription(segs, detected_lang, src_lang, workdir,
+                                         diarize, num_speakers, diarize_engine,
+                                         lang_prob=lang_prob)
+
+
+def _finish_whisper_transcription(segs, detected_lang, src_lang, workdir,
+                                  diarize=False, num_speakers=None, diarize_engine="pyannote",
+                                  lang_prob=None, wav_path=None):
+    """Pos-processamento comum: diarizacao opcional + salvar JSON/SRT."""
+    if diarize and wav_path:
         _liberar_memoria()
-        print("[INFO] Modelo Whisper liberado da RAM antes da diarizacao")
         if diarize_engine == "nemo":
             print("[INFO] Usando diarizacao NeMo (titanet_large)")
             diar_segs = diarize_audio_nemo(wav_path, workdir, num_speakers)
@@ -1155,7 +1256,6 @@ def transcribe_faster_whisper(wav_path, workdir, src_lang, model_size="medium", 
         if diar_segs:
             segs = merge_transcription_with_diarization(segs, diar_segs)
 
-    # Salvar arquivos
     srt_path = Path(workdir, "asr.srt")
     json_path = Path(workdir, "asr.json")
 
@@ -1169,10 +1269,7 @@ def transcribe_faster_whisper(wav_path, workdir, src_lang, model_size="medium", 
             "language": detected_lang,
             "language_specified": src_lang,
             "segments": segs,
-            "info": {
-                "language_probability": lang_prob,
-                "duration": getattr(info, 'duration', None),
-            }
+            "info": {"language_probability": lang_prob},
         }, f, ensure_ascii=False, indent=2)
 
     print(f"[OK] Transcrito: {len(segs)} segmentos")
@@ -1315,151 +1412,24 @@ def transcribe_parakeet(wav_path, workdir, src_lang=None, model_name="nvidia/par
     print("=== ETAPA 3: Transcricao (NVIDIA Parakeet) ===")
     print("="*60)
 
-    try:
-        import nemo.collections.asr as nemo_asr
-    except ImportError:
-        print("[ERRO] NeMo nao instalado. Instale com: pip install nemo_toolkit[asr]")
-        print("[WARN] Usando Whisper como fallback...")
-        return transcribe_faster_whisper(wav_path, workdir, src_lang,
-                                         model_size=model_name.split("-")[-1] if "/" not in model_name else "large-v3",
-                                         diarize=diarize, num_speakers=num_speakers,
-                                         diarize_engine=diarize_engine)
-
-    import torch
-
-    print(f"[INFO] Modelo: {model_name}")
-    print(f"[INFO] Segmentacao: pausa > {segment_pause}s ou > {segment_max_words} palavras")
-
-    if torch.cuda.is_available():
-        print(f"[INFO] GPU: {torch.cuda.get_device_name(0)}")
-    else:
-        print("[WARN] GPU nao disponivel, Parakeet sera lento em CPU")
-
-    # Carregar modelo
-    print("[INFO] Carregando modelo Parakeet...")
-    model = nemo_asr.models.ASRModel.from_pretrained(model_name)
-    if torch.cuda.is_available():
-        model = model.cuda()
-
-    # Transcrever com timestamps
-    print("[INFO] Transcrevendo...")
-    output = model.transcribe([str(wav_path)], timestamps=True)
-
-    # Processar resultado
-    hyp = output[0][0] if isinstance(output[0], list) else output[0]
-
-    segs = []
-    detected_lang = "en"  # Parakeet so suporta ingles por enquanto
-
-    # Extrair timestamps por palavra e agrupar em segmentos
-    if hasattr(hyp, 'timestamp') and hyp.timestamp and 'word' in hyp.timestamp:
-        words = hyp.timestamp['word']
-
-        current_seg = {"start": 0, "end": 0, "words": []}
-
-        for w in words:
-            start = w.get('start', 0)
-            end = w.get('end', 0)
-            word = w.get('word', '')
-
-            if not current_seg["words"]:
-                # Primeiro palavra do segmento
-                current_seg["start"] = start
-                current_seg["end"] = end
-                current_seg["words"].append(word)
-            elif (start - current_seg["end"] > segment_pause or
-                  len(current_seg["words"]) >= segment_max_words):
-                # Nova pausa ou limite de palavras - criar novo segmento
-                segs.append({
-                    "start": current_seg["start"],
-                    "end": current_seg["end"],
-                    "text": " ".join(current_seg["words"])
-                })
-                current_seg = {"start": start, "end": end, "words": [word]}
-            else:
-                # Continua no mesmo segmento
-                current_seg["end"] = end
-                current_seg["words"].append(word)
-
-        # Ultimo segmento
-        if current_seg["words"]:
-            segs.append({
-                "start": current_seg["start"],
-                "end": current_seg["end"],
-                "text": " ".join(current_seg["words"])
-            })
-    else:
-        # Fallback: texto completo sem segmentacao
-        text = hyp.text if hasattr(hyp, 'text') else str(hyp)
-        segs.append({
-            "start": 0,
-            "end": 0,
-            "text": text
-        })
-        print("[WARN] Parakeet nao retornou timestamps, usando texto completo")
-
-    # Salvar arquivos
-    json_path = Path(workdir) / "asr.json"
-    srt_path = Path(workdir) / "asr.srt"
-
-    # SRT
-    with open(srt_path, "w", encoding="utf-8") as f:
-        for i, seg in enumerate(segs, 1):
-            start_ts = ts_stamp(seg["start"])
-            end_ts = ts_stamp(seg["end"])
-            f.write(f"{i}\n{start_ts} --> {end_ts}\n{seg['text']}\n\n")
-
-    # JSON
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump({
-            "language": detected_lang,
-            "language_specified": src_lang,
-            "asr_engine": "parakeet",
-            "model": model_name,
-            "segmentation": {
-                "pause_threshold": segment_pause,
-                "max_words": segment_max_words
-            },
-            "segments": segs,
-        }, f, ensure_ascii=False, indent=2)
-
-    print(f"[OK] Transcrito: {len(segs)} segmentos")
-
-    # Diarizacao opcional (multi-falante)
-    if diarize:
-        # Liberar modelo Parakeet da RAM/VRAM antes de carregar pyannote (evita OOM)
+    # Tentar worker GPU (conda chatterbox com NeMo)
+    if _chatterbox_has_nemo():
         try:
-            del model
-        except Exception:
-            pass
-        _liberar_memoria()
-        print("[INFO] Modelo Parakeet liberado da RAM antes da diarizacao")
-        if diarize_engine == "nemo":
-            print("[INFO] Usando diarizacao NeMo (titanet_large)")
-            diar_segs = diarize_audio_nemo(wav_path, workdir, num_speakers)
-        else:
-            diar_segs = diarize_audio(wav_path, workdir, num_speakers)
-        if diar_segs:
-            segs = merge_transcription_with_diarization(segs, diar_segs)
-            # Atualizar arquivos com info de falante
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump({
-                    "language": detected_lang,
-                    "language_specified": src_lang,
-                    "asr_engine": "parakeet",
-                    "model": model_name,
-                    "diarization": True,
-                    "num_speakers": num_speakers,
-                    "segments": segs,
-                }, f, ensure_ascii=False, indent=2)
-            with open(srt_path, "w", encoding="utf-8") as f:
-                for i, seg in enumerate(segs, 1):
-                    start_ts = ts_stamp(seg["start"])
-                    end_ts = ts_stamp(seg["end"])
-                    speaker_tag = f"[{seg.get('speaker', 'SPEAKER_00')}] " if 'speaker' in seg else ""
-                    f.write(f"{i}\n{start_ts} --> {end_ts}\n{speaker_tag}{seg['text']}\n\n")
+            raw_segs, detected_lang = _transcribe_parakeet_gpu_worker(
+                wav_path, workdir, src_lang, model_name, segment_pause, segment_max_words
+            )
+            return _finish_whisper_transcription(raw_segs, detected_lang, src_lang, workdir,
+                                                 diarize, num_speakers, diarize_engine,
+                                                 wav_path=wav_path)
+        except Exception as e:
+            print(f"[WARN] Parakeet GPU worker falhou ({e}), tentando Whisper GPU...", flush=True)
+    else:
+        print("[WARN] NeMo nao disponivel no conda chatterbox — usando Whisper GPU como fallback...")
 
-    return json_path, srt_path, segs, detected_lang
+    return transcribe_faster_whisper(wav_path, workdir, src_lang,
+                                     model_size="large-v3",
+                                     diarize=diarize, num_speakers=num_speakers,
+                                     diarize_engine=diarize_engine)
 
 
 # ============================================================================
