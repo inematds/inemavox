@@ -6,7 +6,7 @@
 
 Suite de voz com IA local. Dubla, transcreve, corta e baixa videos com modelos rodando direto na GPU — sem custo de API, sem nuvem. Interface web com monitor em tempo real.
 
-**Versao atual: 1.0.0**
+**Versao atual: 1.9.3**
 
 ---
 
@@ -26,30 +26,46 @@ Suite de voz com IA local. Dubla, transcreve, corta e baixa videos com modelos r
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    Frontend (Next.js)                         │
-│                    http://localhost:3000                      │
+│                    http://localhost:3010                      │
 │  Dashboard | Dublar | Transcrever | Cortar | Baixar | Jobs  │
 └──────────────────────────┬──────────────────────────────────┘
                            │ REST + WebSocket
+                           │ (proxy /api/* → :8010)
 ┌──────────────────────────▼──────────────────────────────────┐
 │                   Backend (FastAPI)                           │
-│                   http://localhost:8000                       │
+│                   http://localhost:8010                       │
 │  Job Manager | Model Manager | System Monitor | WebSocket    │
-└──────────────────────────┬──────────────────────────────────┘
-                           │ Docker subprocess
-┌──────────────────────────▼──────────────────────────────────┐
-│              Pipelines (montados como volume no Docker)       │
-│  dublar_pro_v5.py | clipar_v1.py | transcrever_v1.py        │
-│  baixar_v1.py                                                │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-┌──────────────────────────▼──────────────────────────────────┐
-│                     Motores de IA                             │
+└──────────┬───────────────────────────────────┬──────────────┘
+           │ subprocess (venv Python)           │ HTTP
+┌──────────▼──────────────────┐  ┌─────────────▼──────────────┐
+│  Pipelines (Python + venv)  │  │  Ollama (Docker container)  │
+│  dublar_pro_v5.py           │  │  http://localhost:11434      │
+│  clipar_v1.py               │  │  qualquer modelo GGUF        │
+│  transcrever_v1.py          │  │  GPU: NVIDIA GB10 (iGPU)    │
+│  baixar_v1.py               │  └────────────────────────────┘
+└──────────┬──────────────────┘
+           │
+┌──────────▼──────────────────────────────────────────────────┐
+│                     Motores de IA (GPU)                       │
 │  ASR: Whisper large-v3, Parakeet 1.1B                        │
-│  TTS: Edge TTS, Bark, XTTS, Piper                            │
-│  Traducao: M2M100, Ollama (qualquer modelo local)            │
+│  TTS: Edge TTS, Chatterbox, XTTS, Piper                      │
+│  Traducao: M2M100, Ollama (LLM local)                        │
 │  LLM: Ollama, OpenAI, Anthropic, Groq, DeepSeek, OpenRouter  │
+│  Clone de Voz: Chatterbox TTS + Voice Conversion (S3Gen)     │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+### Como o projeto roda
+
+O inemavox roda **diretamente no host** (sem Docker para API e frontend). O Ollama e unico componente em Docker:
+
+| Componente | Modo | Porta |
+|---|---|---|
+| Frontend (Next.js) | processo local (`npm run dev`) | `:3010` |
+| API (FastAPI + uvicorn) | processo local (venv Python) | `:8010` |
+| Ollama | Docker container `ollama-open` | `:11434` |
+
+O projeto tambem tem suporte a modo Docker completo (`./start.sh --docker`) via `docker-compose.yml`, mas para hardware GB10 o modo local e preferido por facilitar o acesso direto a GPU e ao venv com patches de compatibilidade ja aplicados.
 
 ---
 
@@ -59,29 +75,27 @@ Suite de voz com IA local. Dubla, transcreve, corta e baixa videos com modelos r
 
 ```bash
 ./start.sh
-# API: http://localhost:8000
-# Web: http://localhost:3000
+# API: http://localhost:8010
+# Web: http://localhost:3010
 ```
 
 ### Opcao 2: Manual
 
 ```bash
-# Backend
-pip install fastapi "uvicorn[standard]" websockets httpx python-multipart
-uvicorn api.server:app --host 0.0.0.0 --port 8000 --reload &
+# Ollama (Docker)
+docker start ollama-open
+
+# Backend (usar o venv do projeto)
+./venv/bin/uvicorn api.server:app --host 0.0.0.0 --port 8010 --reload &
 
 # Frontend
-cd web && npm install && npm run dev -- -p 3000 -H 0.0.0.0 &
+cd web && npm install && npm run dev -- -p 3010 -H 0.0.0.0 &
 ```
 
-### Opcao 3: Docker GPU
+### Opcao 3: Docker completo (API + Frontend)
 
 ```bash
-# Build da imagem do pipeline
-docker build -t inemavox:gpu .
-
-# Iniciar servicos
-./start.sh
+./start.sh --docker
 ```
 
 ---
@@ -246,7 +260,7 @@ python clipar_v1.py --in video.mp4 --outdir ./clips --mode viral --ollama-model 
 ### Criar job de download
 
 ```bash
-curl -X POST http://localhost:8000/api/jobs/download \
+curl -X POST http://localhost:8010/api/jobs/download \
   -H "Content-Type: application/json" \
   -d '{"url": "https://www.youtube.com/watch?v=VIDEO_ID", "quality": "1080p"}'
 ```
@@ -254,7 +268,7 @@ curl -X POST http://localhost:8000/api/jobs/download \
 ### Criar job de dublagem (URL)
 
 ```bash
-curl -X POST http://localhost:8000/api/jobs \
+curl -X POST http://localhost:8010/api/jobs \
   -H "Content-Type: application/json" \
   -d '{
     "input": "https://www.youtube.com/watch?v=VIDEO_ID",
@@ -269,7 +283,7 @@ curl -X POST http://localhost:8000/api/jobs \
 ### Criar job de transcricao com upload
 
 ```bash
-curl -X POST http://localhost:8000/api/jobs/transcribe/upload \
+curl -X POST http://localhost:8010/api/jobs/transcribe/upload \
   -F "file=@video.mp4" \
   -F 'config_json={"asr_engine":"whisper","whisper_model":"large-v3"}'
 ```
@@ -277,7 +291,7 @@ curl -X POST http://localhost:8000/api/jobs/transcribe/upload \
 ### Criar job de corte com timestamps
 
 ```bash
-curl -X POST http://localhost:8000/api/jobs/cut \
+curl -X POST http://localhost:8010/api/jobs/cut \
   -H "Content-Type: application/json" \
   -d '{
     "input": "https://www.youtube.com/watch?v=VIDEO_ID",
@@ -289,7 +303,7 @@ curl -X POST http://localhost:8000/api/jobs/cut \
 ### Consultar status do job
 
 ```bash
-curl http://localhost:8000/api/jobs/JOB_ID
+curl http://localhost:8010/api/jobs/JOB_ID
 ```
 
 ---
@@ -439,42 +453,55 @@ docker run \
 ### API offline no frontend
 
 ```bash
-curl http://localhost:8000/api/health
-# Se falhar:
-uvicorn api.server:app --host 0.0.0.0 --port 8000
-```
-
-### GPU nao detectada no Docker
-
-```bash
-docker run --gpus all --entrypoint python inemavox:gpu \
-  -c "import torch; print(torch.__version__, torch.cuda.is_available())"
-# Esperado: 2.6.0a0+...nv25.01 True
-```
-
-### Job preso em "queued"
-
-```bash
-# Verificar se ha um container Docker travado
-docker ps | grep inemavox
-# Matar se necessario:
-docker kill inemavox-{job_id}
+curl http://localhost:8010/api/health
+# Se falhar, iniciar com o venv do projeto:
+./venv/bin/uvicorn api.server:app --host 0.0.0.0 --port 8010 --reload
+# ATENCAO: nao usar python3 do sistema — dependencias estao no venv
 ```
 
 ### Ollama nao responde
 
 ```bash
 curl http://localhost:11434/api/tags
-# Se falhar:
-ollama serve
+# Se falhar, iniciar o container:
+docker start ollama-open
+
+# Se a porta estiver ocupada pelo ollama.service do sistema:
+systemctl stop ollama && systemctl disable ollama
+docker start ollama-open
+```
+
+### Ollama nao usa GPU (GB10 iGPU — CUDA backend)
+
+O Ollama (v0.17.4+) no GB10 usa `cuda_v13` para inferencia. Se a GPU nao for detectada (`library=cpu` nos logs), aplicar o fix:
+
+```bash
+# Copiar libs CUDA 12 do cuda_jetpack6 para cuda_v13 (nao remover as .so.13 originais)
+docker exec ollama-open bash -c "
+  cp /usr/lib/ollama/cuda_jetpack6/libcudart.so.12* /usr/lib/ollama/cuda_v13/
+  cp /usr/lib/ollama/cuda_jetpack6/libcublas* /usr/lib/ollama/cuda_v13/
+"
+docker restart ollama-open
+
+# Verificar — deve aparecer "library=CUDA" e "NVIDIA GB10":
+docker logs ollama-open 2>&1 | grep "inference compute"
+```
+
+**Nota:** Nao substituir o `libggml-cuda.so` — o do jetpack6 quebra o NVML discovery.
+
+### Job preso em "queued"
+
+```bash
+# Verificar processos Python do job
+ps aux | grep dublar_pro
+# Matar se necessario:
+kill <PID>
 ```
 
 ### yt-dlp desatualizado (falha em novos sites)
 
 ```bash
-pip install -U yt-dlp
-# Ou dentro do Docker:
-docker exec {container} pip install -U yt-dlp
+./venv/bin/pip install -U yt-dlp
 ```
 
 ---
@@ -495,8 +522,11 @@ docker exec {container} pip install -U yt-dlp
 
 | Versao | Descricao |
 |--------|-----------|
-| **5.3.1** | UX: filtros na lista de jobs, titulo/resumo automatico nos resultados, player de clips com timecodes; fixes de checkpoint e recuperacao de status apos hot-reload |
-| 5.3.0 | Feature Baixar: download de videos do YouTube e +1000 sites via yt-dlp |
-| 5.2.x | Features Cortar (clipar_v1.py) e Transcrever (transcrever_v1.py), modo viral com LLM |
-| 5.1.x | Interface web multi-modo, sistema de jobs com checkpoint e recuperacao |
-| 5.0.x | Pipeline v5 com suporte a Docker GPU Blackwell |
+| **1.9.3** | Fix download prefill + tratamento erro Facebook Reels |
+| 1.9.2 | Prefill no retentar do download |
+| 1.9.1 | Fix topics mode tiny clips e context window dinamico |
+| 1.9.0 | Cut page topics mode, ASR engine selector, retry prefill |
+| 1.8.3 | Diarizacao funcionando (pyannote 3.1.1 + torchaudio 2.10 patches) |
+| 1.8.0 | Clone de voz: Chatterbox TTS + Voice Conversion (S3Gen) |
+| 1.7.x | Facebook Reels com cookies do Firefox; fixes de compatibilidade |
+| 1.0.0 | Interface web com todas as funcionalidades principais |
