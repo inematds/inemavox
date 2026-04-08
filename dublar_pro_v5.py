@@ -456,19 +456,33 @@ def download_youtube(url, output_dir):
         "format": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
         "outtmpl": outtmpl,
         "merge_output_format": "mp4",
+        "writeinfojson": True,
+        "js_runtimes": {"node": {}},
     }
 
+    # Cookies do Firefox para YouTube/Facebook
+    is_youtube = "youtube.com" in url or "youtu.be" in url
+    is_facebook = "facebook.com" in url or "fb.com" in url
+    if is_youtube or is_facebook:
+        from baixar_v1 import _find_firefox_profile
+        firefox_profile = _find_firefox_profile()
+        if firefox_profile:
+            ydl_opts["cookiesfrombrowser"] = ("firefox", firefox_profile, None, None)
+            print(f"[INFO] Usando cookies do Firefox ({Path(firefox_profile).name})", flush=True)
+
     print(f"[INFO] Baixando: {url}", flush=True)
+    video_title = ""
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
+        info = ydl.extract_info(url, download=True)
+        video_title = (info or {}).get("title", "") or ""
 
     # Encontrar o arquivo baixado
     out_dir = Path(output_dir)
-    mp4_files = list(out_dir.glob("video.*"))
+    mp4_files = [f for f in out_dir.glob("video.*") if f.suffix not in (".json", ".part")]
     if mp4_files:
         output_path = max(mp4_files, key=lambda p: p.stat().st_mtime)
         print(f"[OK] Video baixado: {output_path}")
-        return output_path
+        return output_path, video_title
     else:
         print("[ERRO] Nenhum arquivo encontrado apos download")
         sys.exit(1)
@@ -518,15 +532,23 @@ def normalize_audio_safe(audio_data, target_peak=0.84):
 # ============================================================================
 
 def save_checkpoint(workdir, step_num, step_name, data=None):
-    """Salva checkpoint da etapa concluida"""
+    """Salva checkpoint da etapa concluida, preservando dados de etapas anteriores."""
     checkpoint_file = Path(workdir, "checkpoint.json")
+    # Preservar dados acumulados (ex: video_title, video_duration_s salvo na etapa 2)
+    existing_data = {}
+    if checkpoint_file.exists():
+        try:
+            existing_data = json.loads(checkpoint_file.read_text()).get("data", {}) or {}
+        except Exception:
+            pass
+    merged_data = {**existing_data, **(data or {})}
     checkpoint = {
         "version": VERSION,
         "last_step": step_name,
         "last_step_num": step_num,
         "next_step": step_num + 1,
         "timestamp": datetime.now().isoformat(),
-        "data": data or {}
+        "data": merged_data,
     }
     with open(checkpoint_file, 'w', encoding='utf-8') as f:
         json.dump(checkpoint, f, indent=2, ensure_ascii=False)
@@ -1418,6 +1440,11 @@ def transcribe_parakeet(wav_path, workdir, src_lang=None, model_name="nvidia/par
             raw_segs, detected_lang = _transcribe_parakeet_gpu_worker(
                 wav_path, workdir, src_lang, model_name, segment_pause, segment_max_words
             )
+            # Parakeet nao gera pontuacao — merge por duracao para formar frases maiores
+            segs_antes = len(raw_segs)
+            raw_segs = merge_incomplete_segments(raw_segs, max_duration=20.0)
+            if segs_antes != len(raw_segs):
+                print(f"[INFO] Merge Parakeet: {segs_antes} → {len(raw_segs)} segmentos")
             return _finish_whisper_transcription(raw_segs, detected_lang, src_lang, workdir,
                                                  diarize, num_speakers, diarize_engine,
                                                  wav_path=wav_path)
@@ -2764,8 +2791,17 @@ def tts_piper(segments, workdir, tgt_lang, model_path=None):
             out_path = Path(workdir, f"seg_{i:04d}.wav")
 
             try:
+                import shutil as _shutil
+                _piper_bin = (
+                    _shutil.which("piper")
+                    or next((p for p in [
+                        "/home/nmaldaner/miniconda3/bin/piper",
+                        str(Path.home() / "miniconda3/bin/piper"),
+                        str(Path.home() / "miniconda/bin/piper"),
+                    ] if Path(p).exists()), "piper")
+                )
                 proc = subprocess.run(
-                    ["piper", "-m", model_path, "-f", str(out_path)],
+                    [_piper_bin, "-m", model_path, "-f", str(out_path)],
                     input=txt.encode("utf-8"),
                     capture_output=True
                 )
@@ -3230,6 +3266,101 @@ def mux_video_extended(video_in, wav_in, out_mp4, bitrate, extensions, workdir):
 
 
 # ============================================================================
+# ETAPA 7.5: RESUMO FALADO
+# ============================================================================
+
+def generate_summary_audio(segs_trad, workdir, tgt_lang, tts_engine, args):
+    """Gera um resumo falado do conteudo e retorna o caminho do WAV.
+
+    1. Extrai texto traduzido de todos os segmentos
+    2. Pede resumo ao Ollama (ou usa extrativo como fallback)
+    3. Sintetiza com a mesma engine TTS do job
+
+    Returns: Path do WAV ou None se falhar
+    """
+    print("\n" + "="*60)
+    print("=== ETAPA 7.5: Gerando Resumo Falado ===")
+    print("="*60)
+
+    # Coletar texto completo
+    texto_completo = " ".join(
+        (s.get("text_trad") or s.get("text") or "").strip()
+        for s in segs_trad
+        if (s.get("text_trad") or s.get("text") or "").strip()
+    )
+    if not texto_completo:
+        print("[WARN] Sem texto para resumir")
+        return None
+
+    # Gerar resumo via Ollama (fallback: extrativo)
+    texto_resumo = None
+    try:
+        import requests as _req
+        ollama_url = "http://localhost:11434/api/generate"
+        modelo_resumo = getattr(args, "modelo", None) or "llama3.2:3b"
+        # Tentar modelo menor se disponivel
+        for m in [modelo_resumo, "qwen2.5:3b", "llama3.2:3b", "llama3:8b"]:
+            try:
+                r = _req.post(ollama_url, json={
+                    "model": m,
+                    "prompt": (
+                        f"Faça um resumo objetivo em {tgt_lang} do seguinte conteúdo de vídeo. "
+                        f"Use 3 a 5 frases curtas. Comece com 'Neste vídeo' ou similar. "
+                        f"Não use listas, só texto corrido.\n\nConteúdo:\n{texto_completo[:4000]}\n\nResumo:"
+                    ),
+                    "stream": False,
+                    "options": {"num_predict": 200, "temperature": 0.3},
+                }, timeout=60)
+                if r.ok:
+                    texto_resumo = r.json().get("response", "").strip()
+                    if texto_resumo:
+                        print(f"[INFO] Resumo gerado via Ollama ({m}): {len(texto_resumo)} chars")
+                        break
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"[WARN] Ollama indisponivel para resumo: {e}")
+
+    # Fallback: extrativo (primeiras 2 + ultimas 2 frases)
+    if not texto_resumo:
+        frases = [s.get("text_trad") or s.get("text") or "" for s in segs_trad if (s.get("text_trad") or s.get("text") or "").strip()]
+        selecao = frases[:3] + (["..."] if len(frases) > 6 else []) + frases[-3:]
+        texto_resumo = " ".join(selecao[:6])
+        print(f"[INFO] Resumo extrativo: {len(texto_resumo)} chars")
+
+    if not texto_resumo:
+        return None
+
+    print(f"[INFO] Resumo: {texto_resumo[:200]}...")
+
+    # Sintetizar resumo com TTS
+    summary_wav = Path(workdir, "summary_audio.wav")
+    seg_resumo = [{"start": 0.0, "end": 999.0, "text_trad": texto_resumo, "text": texto_resumo}]
+
+    try:
+        if tts_engine == "edge":
+            voice = getattr(args, "voice", None)
+            seg_files_r, sr_r, _ = tts_edge(seg_resumo, workdir, tgt_lang, voice=voice)
+        elif tts_engine == "piper":
+            seg_files_r, sr_r, _ = tts_piper(seg_resumo, workdir, tgt_lang)
+        elif tts_engine == "chatterbox":
+            seg_files_r, sr_r, _ = tts_chatterbox(seg_resumo, workdir, tgt_lang, args)
+        else:
+            seg_files_r, sr_r, _ = tts_edge(seg_resumo, workdir, tgt_lang)
+
+        if seg_files_r and seg_files_r[0].exists():
+            # Renomear para summary_audio.wav
+            import shutil as _shutil
+            _shutil.copy(str(seg_files_r[0]), str(summary_wav))
+            print(f"[OK] Resumo sintetizado: {summary_wav.name}")
+            return summary_wav
+    except Exception as e:
+        print(f"[WARN] TTS do resumo falhou: {e}")
+
+    return None
+
+
+# ============================================================================
 # ETAPA 8: CONCATENACAO
 # ============================================================================
 
@@ -3479,6 +3610,8 @@ Exemplos:
     ap.add_argument("--bitrate", default="192k", help="Bitrate AAC")
     ap.add_argument("--fade", type=int, default=1, choices=[0, 1], help="Aplicar fade")
     ap.add_argument("--seed", type=int, default=42, help="Seed para reproducibilidade")
+    ap.add_argument("--summary", action="store_true",
+                   help="Adicionar resumo falado ao final do video")
 
     # Atalhos
     ap.add_argument("--qualidade", choices=["rapido", "balanceado", "maximo"], default="balanceado",
@@ -3517,13 +3650,15 @@ Exemplos:
     workdir = Path("dub_work")
     workdir.mkdir(exist_ok=True)
 
+    video_title = ""
     if is_youtube_url(video_in):
-        video_in = download_youtube(video_in, workdir)
+        video_in, video_title = download_youtube(video_in, workdir)
     else:
         video_in = Path(video_in).resolve()
         if not video_in.exists():
             print(f"[ERRO] Arquivo nao encontrado: {video_in}")
             sys.exit(1)
+        video_title = video_in.stem
 
     outdir = Path(args.outdir)
     outdir.mkdir(exist_ok=True)
@@ -3575,7 +3710,7 @@ Exemplos:
         print(f"[INFO] Duracao do video: {int(video_duration_s//60)}m{int(video_duration_s%60)}s")
     except Exception:
         pass
-    save_checkpoint(workdir, 2, "extraction", {"video_duration_s": video_duration_s})
+    save_checkpoint(workdir, 2, "extraction", {"video_duration_s": video_duration_s, "video_title": video_title})
     tempos_etapas["1-2_extracao"] = time.time() - t_etapa
 
     # ========== ETAPA 3: Transcricao ==========
@@ -3768,9 +3903,35 @@ Exemplos:
     save_checkpoint(workdir, 9, "postprocess")
     tempos_etapas["9_postprocess"] = time.time() - t_etapa
 
+    # ========== ETAPA 9.5: Resumo Falado ==========
+    if getattr(args, "summary", False):
+        t_etapa_r = time.time()
+        summary_wav = generate_summary_audio(segs_trad, workdir, args.tgt, args.tts, args)
+        if summary_wav and summary_wav.exists():
+            # Concatenar resumo ao final do dub_final.wav
+            dub_com_resumo = Path(workdir, "dub_final_com_resumo.wav")
+            concat_list_r = Path(workdir, "list_resumo.txt")
+            concat_list_r.write_text(
+                f"file '{dub_final.name}'\nfile '{summary_wav.name}'\n", encoding="utf-8"
+            )
+            sh(["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                "-i", str(concat_list_r), "-c", "copy", str(dub_com_resumo)])
+            if dub_com_resumo.exists():
+                # Registrar extensao de video (freeze no ultimo frame) pela duracao do resumo
+                video_dur = ffprobe_duration(video_in)
+                summary_dur = ffprobe_duration(summary_wav)
+                video_extensions.append({
+                    "timestamp": video_dur,
+                    "duration": summary_dur,
+                    "segment": -1
+                })
+                dub_final = dub_com_resumo
+                print(f"[OK] Resumo ({summary_dur:.1f}s) adicionado ao final do video")
+        tempos_etapas["9.5_resumo"] = time.time() - t_etapa_r
+
     # ========== ETAPA 10: Mux ==========
     t_etapa = time.time()
-    if args.sync == "extend" and video_extensions:
+    if (args.sync == "extend" or getattr(args, "summary", False)) and video_extensions:
         mux_video_extended(video_in, dub_final, out_mp4, args.bitrate, video_extensions, workdir)
     else:
         mux_video(video_in, dub_final, out_mp4, args.bitrate)

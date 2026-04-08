@@ -11,9 +11,16 @@ import urllib.request
 from pathlib import Path
 
 
-def write_checkpoint(dub_work_dir: Path, step: int):
-    cp = {"last_step_num": step}
-    (dub_work_dir / "checkpoint.json").write_text(json.dumps(cp))
+def write_checkpoint(dub_work_dir: Path, step: int, data: dict | None = None):
+    cp_path = dub_work_dir / "checkpoint.json"
+    existing_data: dict = {}
+    if cp_path.exists():
+        try:
+            existing_data = json.loads(cp_path.read_text()).get("data", {}) or {}
+        except Exception:
+            pass
+    cp = {"last_step_num": step, "data": {**existing_data, **(data or {})}}
+    cp_path.write_text(json.dumps(cp))
 
 
 def process_local_file(local_file: Path, quality: str, outdir: Path) -> Path:
@@ -198,9 +205,14 @@ def main():
             "merge_output_format": "mp4",
         }
 
-    # Para URLs do Facebook: impersonacao + cookies do Firefox
+    # Habilitar runtime JS para resolver n-challenge do YouTube
+    ydl_opts["js_runtimes"] = {"node": {}}
+
+    # Cookies do Firefox para sites que exigem autenticacao
     is_facebook = "facebook.com" in url or "fb.com" in url
     is_reel = "/reel/" in url or "/share/r/" in url
+    is_youtube = "youtube.com" in url or "youtu.be" in url
+
     if is_facebook:
         try:
             from yt_dlp.networking.impersonate import ImpersonateTarget
@@ -208,23 +220,28 @@ def main():
         except ImportError:
             pass
 
-        # Tentar cookies do Firefox (incluindo instalacao via snap)
+    if is_facebook or is_youtube:
         firefox_profile = _find_firefox_profile()
-        cookies_file = Path(__file__).parent / "facebook_cookies.txt"
+        site_label = "YouTube" if is_youtube else "Facebook"
+        cookies_file = Path(__file__).parent / ("youtube_cookies.txt" if is_youtube else "facebook_cookies.txt")
 
         if firefox_profile:
             ydl_opts["cookiesfrombrowser"] = ("firefox", firefox_profile, None, None)
-            print(f"[baixar] Facebook: usando cookies do Firefox ({Path(firefox_profile).name})", flush=True)
+            print(f"[baixar] {site_label}: usando cookies do Firefox ({Path(firefox_profile).name})", flush=True)
         elif cookies_file.exists():
             ydl_opts["cookiefile"] = str(cookies_file)
-            print(f"[baixar] Facebook: usando cookies de {cookies_file.name}", flush=True)
+            print(f"[baixar] {site_label}: usando cookies de {cookies_file.name}", flush=True)
         elif is_reel:
             print("[baixar] Facebook Reel detectado — faca login no Firefox para melhor resultado", flush=True)
+        elif is_youtube:
+            print("[baixar] YouTube requer login — faca login no Firefox ou exporte cookies para youtube_cookies.txt", flush=True)
 
     print("[baixar] Iniciando download...", flush=True)
+    video_title = ""
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+            info = ydl.extract_info(url, download=True)
+            video_title = (info or {}).get("title", "") or ""
     except Exception as e:
         err_str = str(e)
         if "Cannot parse data" in err_str and is_reel:
@@ -242,6 +259,14 @@ def main():
                 "[baixar] Alternativa: use fdownloader.net e depois 'Arquivo Local'.",
                 flush=True,
             )
+        elif "Sign in to confirm" in err_str and is_youtube:
+            print(
+                "[baixar] ERRO: YouTube exige login (deteccao de bot).\n"
+                "[baixar] Para resolver: faca login no YouTube pelo Firefox do servidor,\n"
+                "[baixar]   ou exporte cookies para youtube_cookies.txt (formato Netscape).\n"
+                "[baixar] Use a extensao 'Get cookies.txt LOCALLY' no Chrome/Firefox.",
+                flush=True,
+            )
         else:
             print(f"[baixar] ERRO: {err_str}", flush=True)
         sys.exit(1)
@@ -253,7 +278,7 @@ def main():
         sys.exit(1)
 
     print(f"[baixar] Download concluido: {files[0].name} ({files[0].stat().st_size // 1024 // 1024}MB)", flush=True)
-    write_checkpoint(dub_work, 1)
+    write_checkpoint(dub_work, 1, data={"video_title": video_title})
 
 
 if __name__ == "__main__":
