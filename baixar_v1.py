@@ -47,14 +47,28 @@ def process_local_file(local_file: Path, quality: str, outdir: Path) -> Path:
             str(out_path),
         ]
         print(f"[baixar] Convertendo para {quality}...", flush=True)
-    else:  # best — remux para MP4 sem re-encode
+    else:  # best — remux para MP4 sem re-encode (re-encoda se pix_fmt incompativel)
         out_path = outdir / "video.mp4"
-        cmd = [
-            "ffmpeg", "-y", "-i", str(local_file),
-            "-c", "copy",
-            str(out_path),
-        ]
-        print("[baixar] Remuxando para MP4...", flush=True)
+        pix_fmt = _probe_pix_fmt(local_file)
+        web_safe = pix_fmt in ("yuv420p", "yuvj420p", "")
+        if web_safe:
+            cmd = [
+                "ffmpeg", "-y", "-i", str(local_file),
+                "-c", "copy",
+                "-movflags", "+faststart",
+                str(out_path),
+            ]
+            print("[baixar] Remuxando para MP4...", flush=True)
+        else:
+            cmd = [
+                "ffmpeg", "-y", "-i", str(local_file),
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-crf", "18", "-preset", "fast",
+                "-c:a", "aac", "-b:a", "192k",
+                "-movflags", "+faststart",
+                str(out_path),
+            ]
+            print(f"[baixar] pix_fmt={pix_fmt} incompativel com browsers, re-encodando para yuv420p...", flush=True)
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -63,8 +77,10 @@ def process_local_file(local_file: Path, quality: str, outdir: Path) -> Path:
             print("[baixar] Remux falhou, tentando com re-encode...", flush=True)
             cmd2 = [
                 "ffmpeg", "-y", "-i", str(local_file),
-                "-c:v", "libx264", "-crf", "23", "-preset", "fast",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-crf", "23", "-preset", "fast",
                 "-c:a", "aac", "-b:a", "128k",
+                "-movflags", "+faststart",
                 str(out_path),
             ]
             result2 = subprocess.run(cmd2, capture_output=True, text=True)
@@ -74,6 +90,75 @@ def process_local_file(local_file: Path, quality: str, outdir: Path) -> Path:
             raise RuntimeError(f"ffmpeg falhou: {result.stderr[-400:]}")
 
     return out_path
+
+
+def _probe_pix_fmt(path: Path) -> str:
+    """Retorna o pix_fmt da primeira stream de video, ou string vazia se falhar."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=pix_fmt", "-of", "default=nw=1:nk=1",
+             str(path)],
+            capture_output=True, text=True, timeout=15,
+        )
+        return r.stdout.strip()
+    except Exception:
+        return ""
+
+
+def _ensure_compatible_video(path: Path) -> Path:
+    """Garante H.264 + AAC-LC pra compat universal (CapCut, TikTok, Instagram, Premiere).
+    Recodifica se vier AV1/HEVC/VP9 no video ou HE-AAC/Opus no audio."""
+    if path.suffix.lower() != ".mp4" or not path.exists():
+        return path
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries",
+             "stream=codec_name,codec_type,profile,pix_fmt",
+             "-of", "default=nw=1", str(path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        out = r.stdout.lower()
+    except Exception:
+        return path
+
+    bad_video = any(c in out for c in (
+        "codec_name=av1", "codec_name=hevc", "codec_name=h265", "codec_name=vp9", "codec_name=vp09",
+    ))
+    bad_pixfmt = "pix_fmt=yuv420p" not in out and "codec_type=video" in out
+    bad_audio = any(p in out for p in (
+        "profile=he-aac", "profile=he-aacv2", "codec_name=opus", "codec_name=vorbis",
+    ))
+
+    if not (bad_video or bad_pixfmt or bad_audio):
+        return path
+
+    reasons = []
+    if bad_video: reasons.append("video AV1/HEVC/VP9")
+    if bad_pixfmt: reasons.append("pix_fmt incompativel")
+    if bad_audio: reasons.append("audio HE-AAC/Opus")
+    print(f"[baixar] Recodificando para H.264 + AAC-LC ({', '.join(reasons)})...", flush=True)
+
+    tmp = path.with_name(path.stem + "_compat.mp4")
+    cmd = [
+        "ffmpeg", "-y", "-i", str(path),
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.1",
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+        "-movflags", "+faststart",
+        str(tmp),
+    ]
+    rc = subprocess.run(cmd, capture_output=True, text=True)
+    if rc.returncode != 0 or not tmp.exists():
+        print(f"[baixar] AVISO: recode falhou, mantendo original. Erro: {rc.stderr[-300:]}", flush=True)
+        if tmp.exists():
+            tmp.unlink()
+        return path
+
+    path.unlink()
+    tmp.rename(path)
+    print("[baixar] Recode concluido — arquivo compativel com CapCut/TikTok/Instagram/Premiere.", flush=True)
+    return path
 
 
 def _find_firefox_profile() -> str | None:
@@ -133,6 +218,7 @@ def main():
             sys.exit(1)
         try:
             out = process_local_file(local_path, args.quality, outdir)
+            out = _ensure_compatible_video(out)
             size_mb = out.stat().st_size // 1024 // 1024
             print(f"[baixar] Concluido: {out.name} ({size_mb}MB)", flush=True)
             write_checkpoint(dub_work, 1)
@@ -182,25 +268,29 @@ def main():
         }
     elif args.quality == "1080p":
         ydl_opts = {
-            "format": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+            "format": "bestvideo[height<=1080][vcodec*=avc][ext=mp4]+bestaudio[acodec*=mp4a][ext=m4a]/bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+            "format_sort": ["vcodec:h264", "acodec:aac"],
             "outtmpl": outtmpl,
             "merge_output_format": "mp4",
         }
     elif args.quality == "720p":
         ydl_opts = {
-            "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+            "format": "bestvideo[height<=720][vcodec*=avc][ext=mp4]+bestaudio[acodec*=mp4a][ext=m4a]/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+            "format_sort": ["vcodec:h264", "acodec:aac"],
             "outtmpl": outtmpl,
             "merge_output_format": "mp4",
         }
     elif args.quality == "480p":
         ydl_opts = {
-            "format": "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]/best",
+            "format": "bestvideo[height<=480][vcodec*=avc][ext=mp4]+bestaudio[acodec*=mp4a][ext=m4a]/bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]/best",
+            "format_sort": ["vcodec:h264", "acodec:aac"],
             "outtmpl": outtmpl,
             "merge_output_format": "mp4",
         }
     else:  # best
         ydl_opts = {
-            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
+            "format": "bestvideo[vcodec*=avc][ext=mp4]+bestaudio[acodec*=mp4a][ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
+            "format_sort": ["vcodec:h264", "acodec:aac"],
             "outtmpl": outtmpl,
             "merge_output_format": "mp4",
         }
@@ -277,7 +367,11 @@ def main():
         print("[baixar] ERRO: Nenhum arquivo baixado encontrado", flush=True)
         sys.exit(1)
 
-    print(f"[baixar] Download concluido: {files[0].name} ({files[0].stat().st_size // 1024 // 1024}MB)", flush=True)
+    # Garantir compatibilidade universal (CapCut, TikTok, Instagram, Premiere)
+    # — recodifica se vier AV1/HEVC/VP9 ou HE-AAC, comum em Facebook Reels
+    final_path = _ensure_compatible_video(files[0])
+
+    print(f"[baixar] Download concluido: {final_path.name} ({final_path.stat().st_size // 1024 // 1024}MB)", flush=True)
     write_checkpoint(dub_work, 1, data={"video_title": video_title})
 
 
