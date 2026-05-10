@@ -1105,6 +1105,35 @@ def _chatterbox_has_nemo():
         return False
 
 
+def _free_gpu_ram_for_worker():
+    """Descarrega modelos Ollama da VRAM antes do worker GPU.
+    No GB10 (unified memory), Ollama com qwen2.5:32b come 25-30GB e
+    Parakeet/Whisper batem CUDA OOM. Pede pro Ollama liberar com
+    keep_alive=0. Falha silenciosa se Ollama offline."""
+    try:
+        import urllib.request
+        import json as _j
+        host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+        with urllib.request.urlopen(f"{host}/api/ps", timeout=3) as r:
+            loaded = _j.loads(r.read()).get("models", [])
+        for m in loaded:
+            name = m.get("name") or m.get("model")
+            if not name:
+                continue
+            body = _j.dumps({"model": name, "keep_alive": 0}).encode()
+            req = urllib.request.Request(
+                f"{host}/api/generate", data=body,
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
+            try:
+                urllib.request.urlopen(req, timeout=5).read()
+                print(f"[gpu] Descarregado Ollama: {name} (libera VRAM)", flush=True)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def _transcribe_whisper_gpu_worker(wav_path, workdir, src_lang, model_size):
     """Transcreve via whisper_gpu_worker.py no conda chatterbox (GPU)."""
     import subprocess as _sp
@@ -1120,6 +1149,7 @@ def _transcribe_whisper_gpu_worker(wav_path, workdir, src_lang, model_size):
     if src_lang:
         cmd += ["--lang", src_lang]
 
+    _free_gpu_ram_for_worker()
     print(f"[whisper_gpu] Transcrevendo com Whisper GPU ({model_size})...", flush=True)
     result = _sp.run(cmd, text=True)
     if result.returncode != 0:
@@ -1146,6 +1176,7 @@ def _transcribe_parakeet_gpu_worker(wav_path, workdir, src_lang, model_name,
         "--segment-max-words", str(segment_max_words),
     ]
 
+    _free_gpu_ram_for_worker()
     print(f"[parakeet_gpu] Transcrevendo com Parakeet GPU ({model_name})...", flush=True)
     result = _sp.run(cmd, text=True)
     if result.returncode != 0:

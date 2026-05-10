@@ -15,6 +15,43 @@ CHATTERBOX_PYTHON = os.environ.get(
     "/home/nmaldaner/miniconda3/envs/chatterbox/bin/python3",
 )
 
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+
+
+def _free_gpu_ram_for_worker():
+    """Descarrega modelos Ollama da VRAM antes de subir worker GPU.
+
+    No GB10 (unified memory), Ollama com qwen2.5:32b come 25-30GB e
+    Parakeet/Whisper batem CUDA OOM. Pede pro Ollama liberar com
+    keep_alive=0. Falha silenciosa: Ollama offline nao bloqueia o
+    pipeline; OOM real ainda aparece no worker.
+    """
+    try:
+        import urllib.request
+        with urllib.request.urlopen(f"{OLLAMA_HOST}/api/ps", timeout=3) as r:
+            loaded = json.loads(r.read()).get("models", [])
+        if not loaded:
+            return
+        for m in loaded:
+            name = m.get("name") or m.get("model")
+            if not name:
+                continue
+            body = json.dumps({"model": name, "keep_alive": 0}).encode()
+            req = urllib.request.Request(
+                f"{OLLAMA_HOST}/api/generate",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                urllib.request.urlopen(req, timeout=5).read()
+                print(f"[transcription] Descarregado Ollama: {name} (libera VRAM)", flush=True)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 
 def write_checkpoint(workdir: Path, step_num: int, step_id: str, step_name: str):
     """Escreve checkpoint no mesmo formato do dublar_pro_v5.py."""
@@ -43,8 +80,16 @@ def download_input(input_val: str, workdir: Path) -> Path:
             "--output", str(out_template),
             "--no-playlist",
             "--write-info-json",
-            input_val,
         ]
+        # Cookies do Firefox para sites que bloqueiam download anonimo (TikTok,
+        # Facebook, YouTube com gating). Falha silenciosa se Firefox nao instalado.
+        host_lower = input_val.lower()
+        needs_cookies = any(d in host_lower for d in (
+            "tiktok.com", "facebook.com", "fb.com", "youtube.com", "youtu.be",
+        ))
+        if needs_cookies:
+            cmd += ["--cookies-from-browser", "firefox"]
+        cmd += [input_val]
         result = subprocess.run(cmd, capture_output=False)
         if result.returncode != 0:
             raise RuntimeError(f"yt-dlp falhou com codigo {result.returncode}")
@@ -133,6 +178,7 @@ def transcribe_whisper_gpu(audio_path: Path, model: str, src_lang: str | None) -
     if src_lang:
         cmd += ["--lang", src_lang]
 
+    _free_gpu_ram_for_worker()
     print(f"[transcription] Transcrevendo com Whisper GPU ({model})...", flush=True)
     result = subprocess.run(cmd, text=True)
     if result.returncode != 0:
@@ -174,6 +220,7 @@ def transcribe_parakeet_gpu(audio_path: Path, model: str, src_lang: str | None) 
         "--output-json", str(output_json),
     ]
 
+    _free_gpu_ram_for_worker()
     print(f"[transcription] Transcrevendo com Parakeet GPU ({model})...", flush=True)
     result = subprocess.run(cmd, text=True)
     if result.returncode != 0:

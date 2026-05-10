@@ -302,6 +302,7 @@ def main():
     is_facebook = "facebook.com" in url or "fb.com" in url
     is_reel = "/reel/" in url or "/share/r/" in url
     is_youtube = "youtube.com" in url or "youtu.be" in url
+    is_tiktok = "tiktok.com" in url
 
     if is_facebook:
         try:
@@ -310,10 +311,18 @@ def main():
         except ImportError:
             pass
 
-    if is_facebook or is_youtube:
+    if is_facebook or is_youtube or is_tiktok:
         firefox_profile = _find_firefox_profile()
-        site_label = "YouTube" if is_youtube else "Facebook"
-        cookies_file = Path(__file__).parent / ("youtube_cookies.txt" if is_youtube else "facebook_cookies.txt")
+        if is_tiktok:
+            site_label = "TikTok"
+            cookies_filename = "tiktok_cookies.txt"
+        elif is_youtube:
+            site_label = "YouTube"
+            cookies_filename = "youtube_cookies.txt"
+        else:
+            site_label = "Facebook"
+            cookies_filename = "facebook_cookies.txt"
+        cookies_file = Path(__file__).parent / cookies_filename
 
         if firefox_profile:
             ydl_opts["cookiesfrombrowser"] = ("firefox", firefox_profile, None, None)
@@ -325,6 +334,8 @@ def main():
             print("[baixar] Facebook Reel detectado — faca login no Firefox para melhor resultado", flush=True)
         elif is_youtube:
             print("[baixar] YouTube requer login — faca login no Firefox ou exporte cookies para youtube_cookies.txt", flush=True)
+        elif is_tiktok:
+            print("[baixar] TikTok bloqueia sem cookies — faca login no Firefox ou exporte cookies para tiktok_cookies.txt", flush=True)
 
     print("[baixar] Iniciando download...", flush=True)
     video_title = ""
