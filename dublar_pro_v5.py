@@ -3132,6 +3132,7 @@ def mux_video_extended(video_in, wav_in, out_mp4, bitrate, extensions, workdir):
             "-c:v", "copy",
             "-c:a", "aac",
             "-b:a", bitrate,
+            "-ar", "48000", "-ac", "2",
             str(out_mp4)])
         print(f"[OK] Video final: {out_mp4}")
         return
@@ -3217,6 +3218,7 @@ def mux_video_extended(video_in, wav_in, out_mp4, bitrate, extensions, workdir):
             "-c:v", "copy",
             "-c:a", "aac",
             "-b:a", bitrate,
+            "-ar", "48000", "-ac", "2",
             str(out_mp4)])
         print(f"[OK] Video final: {out_mp4}")
         return
@@ -3248,6 +3250,7 @@ def mux_video_extended(video_in, wav_in, out_mp4, bitrate, extensions, workdir):
             "-c:v", "copy",
             "-c:a", "aac",
             "-b:a", bitrate,
+            "-ar", "48000", "-ac", "2",
             "-shortest",
             str(out_mp4)])
         print(f"[OK] Video final (estendido): {out_mp4}")
@@ -3261,6 +3264,7 @@ def mux_video_extended(video_in, wav_in, out_mp4, bitrate, extensions, workdir):
             "-c:v", "copy",
             "-c:a", "aac",
             "-b:a", bitrate,
+            "-ar", "48000", "-ac", "2",
             str(out_mp4)])
         print(f"[OK] Video final: {out_mp4}")
 
@@ -3426,6 +3430,7 @@ def mux_video(video_in, wav_in, out_mp4, bitrate):
         "-c:v", "copy",
         "-c:a", "aac",
         "-b:a", bitrate,
+            "-ar", "48000", "-ac", "2",
         str(out_mp4)])
 
     print(f"[OK] Video final: {out_mp4}")
