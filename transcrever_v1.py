@@ -27,7 +27,8 @@ def _free_gpu_ram_for_worker():
     pipeline; OOM real ainda aparece no worker.
     """
     try:
-        import urllib.request
+        import urllib.request, urllib.error
+        # Lista modelos carregados
         with urllib.request.urlopen(f"{OLLAMA_HOST}/api/ps", timeout=3) as r:
             loaded = json.loads(r.read()).get("models", [])
         if not loaded:
@@ -52,16 +53,22 @@ def _free_gpu_ram_for_worker():
         pass
 
 
-
-def write_checkpoint(workdir: Path, step_num: int, step_id: str, step_name: str):
-    """Escreve checkpoint no mesmo formato do dublar_pro_v5.py."""
+def write_checkpoint(workdir: Path, step_num: int, step_id: str, step_name: str, data: dict | None = None):
+    """Escreve checkpoint no mesmo formato do dublar_pro_v5.py, preservando dados anteriores."""
+    cp_path = workdir / "dub_work" / "checkpoint.json"
+    existing_data: dict = {}
+    if cp_path.exists():
+        try:
+            existing_data = json.loads(cp_path.read_text()).get("data", {}) or {}
+        except Exception:
+            pass
     cp = {
         "last_step_num": step_num,
         "last_step": step_id,
         "last_step_name": step_name,
         "timestamp": time.time(),
+        "data": {**existing_data, **(data or {})},
     }
-    cp_path = workdir / "dub_work" / "checkpoint.json"
     cp_path.parent.mkdir(parents=True, exist_ok=True)
     cp_path.write_text(json.dumps(cp, indent=2))
     print(f"[checkpoint] etapa {step_num}: {step_name}", flush=True)
@@ -86,6 +93,10 @@ def download_input(input_val: str, workdir: Path) -> Path:
         host_lower = input_val.lower()
         needs_cookies = any(d in host_lower for d in (
             "tiktok.com", "facebook.com", "fb.com", "youtube.com", "youtu.be",
+            # instagram estava fora da lista e o download ia anonimo: o yt-dlp
+            # devolvia "Instagram sent an empty media response" e o script morria
+            # antes de transcrever qualquer coisa.
+            "instagram.com", "instagr.am",
         ))
         if needs_cookies:
             cmd += ["--cookies-from-browser", "firefox"]
@@ -377,7 +388,19 @@ def main():
 
         # Etapa 2: Extraction
         audio = extract_audio(source, workdir)
-        write_checkpoint(workdir, 2, "extraction", "Extracao de audio")
+        _dur_s = 0
+        try:
+            _probe = subprocess.run(
+                ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+                 "-of", "csv=p=0", str(audio)],
+                capture_output=True, text=True, timeout=10,
+            )
+            _dur_s = round(float(_probe.stdout.strip()), 1)
+        except Exception:
+            pass
+        _title = get_video_title(workdir, args.input)
+        write_checkpoint(workdir, 2, "extraction", "Extracao de audio",
+                         data={"video_duration_s": _dur_s, "video_title": _title})
 
         # Etapa 3: Transcription
         if args.asr == "parakeet":
