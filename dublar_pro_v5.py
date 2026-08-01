@@ -19,7 +19,7 @@ warnings.filterwarnings("ignore")
 # CONFIGURACOES GLOBAIS
 # ============================================================================
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # Caracteres por segundo por idioma (para estimativa de duracao)
 CPS_POR_IDIOMA = {
@@ -439,6 +439,16 @@ def is_youtube_url(url):
     """Verifica se e uma URL do YouTube (mantido para compatibilidade)"""
     return is_url(url)
 
+def tem_faixa_de_audio(path) -> bool:
+    """True se o arquivo tem pelo menos uma stream de audio (ffprobe)."""
+    r = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a",
+         "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True,
+    )
+    return "audio" in r.stdout
+
+
 def download_youtube(url, output_dir):
     """Baixa video de qualquer plataforma suportada por yt-dlp (YouTube, TikTok, Instagram, etc.)"""
     print("\n" + "="*60)
@@ -453,7 +463,16 @@ def download_youtube(url, output_dir):
 
     outtmpl = str(Path(output_dir) / "video.%(ext)s")
     ydl_opts = {
-        "format": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+        # Cada alternativa exige audio antes de cair no "melhor qualquer coisa":
+        # os fallbacks antigos (best[height<=1080]/best) podiam entregar um
+        # arquivo so-video, e a dublagem morria depois, dentro do ffmpeg.
+        "format": (
+            "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/"
+            "bestvideo[height<=1080]+bestaudio/"
+            "best[height<=1080][acodec!=none]/"
+            "best[acodec!=none]/"
+            "best[height<=1080]/best"
+        ),
         "outtmpl": outtmpl,
         "merge_output_format": "mp4",
         "writeinfojson": True,
@@ -482,6 +501,14 @@ def download_youtube(url, output_dir):
     if mp4_files:
         output_path = max(mp4_files, key=lambda p: p.stat().st_mtime)
         print(f"[OK] Video baixado: {output_path}")
+        if not tem_faixa_de_audio(output_path):
+            # Sem isso o erro so aparecia la na frente como "ffmpeg exit 234 /
+            # Output file does not contain any stream", que nao diz nada.
+            # Acontece de verdade: o TikTok anuncia aac no manifesto e entrega
+            # arquivo so-video em todos os formatos de alguns posts.
+            print(f"[ERRO] O video baixado nao tem faixa de audio: {output_path}")
+            print("[ERRO] Nao ha o que dublar. A origem entregou video mudo em todos os formatos.")
+            sys.exit(1)
         return output_path, video_title
     else:
         print("[ERRO] Nenhum arquivo encontrado apos download")
@@ -1639,35 +1666,48 @@ def _remover_fillers(texto, idioma="pt"):
     return resultado.strip()
 
 
+def _truncar_em_sentenca(texto: str, chars_alvo: int) -> str:
+    """Trunca no último ponto final completo que caiba em chars_alvo."""
+    import re
+    trecho = texto[:chars_alvo]
+    m = re.search(r'^(.*[.!?])\s', trecho, re.DOTALL)
+    if m:
+        return m.group(1)
+    idx = trecho.rfind(' ')
+    return (trecho[:idx] + '.') if idx > 0 else trecho
+
+
 def ajustar_texto_para_duracao(texto, duracao_alvo, cps_original, idioma="pt", no_truncate=False):
-    """Ajusta texto para caber na duracao alvo baseado no CPS original
+    """Ajusta texto para caber na duracao alvo baseado no CPS original.
 
     Estrategia em camadas:
-    1. Remover fillers/enchimentos (sempre, nao perde sentido)
-    2. Se ainda nao cabe e ratio >= 0.7, truncar mantendo sentido
-    3. Se no_truncate, nunca trunca (sync ajusta duracao)
+    1. Remover fillers/enchimentos (sempre)
+    2. Calcular ratio chars_alvo / chars_atual
+    3. Se no_truncate:
+       - ratio >= 0.5 (texto até 2× o limite): respeita, sync ajusta velocidade
+       - ratio <  0.5 (texto mais que 2× o limite): trunca na última sentença completa
+    4. Se não no_truncate:
+       - ratio >= 0.7: trunca por palavras mantendo sentido
+       - ratio <  0.7: deixa para o sync (compressão extrema de qualquer forma)
     """
-    # Passo 1: SEMPRE remover fillers (nao perde sentido, so ajuda)
     texto = _remover_fillers(texto, idioma)
 
-    # Se no_truncate ativado, retorna apos limpar fillers
-    if no_truncate:
-        return texto
-
-    # Usar CPS do audio original em vez do default do idioma
     cps_alvo = cps_original * 1.1  # 10% de margem
-
     chars_alvo = int(duracao_alvo * cps_alvo)
     chars_atual = len(texto)
 
     if chars_atual <= chars_alvo:
-        return texto  # OK, cabe
+        return texto
 
-    # Precisa reduzir mais
     ratio = chars_alvo / chars_atual
 
+    if no_truncate:
+        # Só intervém em casos extremos (texto >2× o limite do slot)
+        if ratio < 0.5:
+            return _truncar_em_sentenca(texto, chars_alvo)
+        return texto
+
     if ratio >= 0.7:
-        # Truncar mantendo sentido - corta palavras do final
         palavras = texto.split()
         palavras_alvo = int(len(palavras) * ratio)
         simplificado = ' '.join(palavras[:palavras_alvo])
@@ -1675,9 +1715,8 @@ def ajustar_texto_para_duracao(texto, duracao_alvo, cps_original, idioma="pt", n
             simplificado += '.'
         return simplificado
 
-    else:
-        # Reducao muito grande - deixar texto (sync vai ajustar velocidade)
-        return texto
+    # Reducao muito grande - deixar para o sync
+    return texto
 
 # ============================================================================
 # FASE 2: TRADUCAO COM CONTEXTO VIA OLLAMA
@@ -1829,12 +1868,22 @@ def _clean_ollama_response(response, original_text):
 
 def translate_ollama_with_context(text, src_lang, tgt_lang, model="llama3",
                                    previous_segments=None, target_duration=None,
-                                   cps_original=None, timeout=120):
+                                   cps_original=None, timeout=None):
     """Traduz texto usando Ollama COM CONTEXTO dos segmentos anteriores
 
     FASE 2: Contexto na traducao - passa segmentos anteriores para manter consistencia
     """
     import httpx
+
+    # Timeout adaptativo: modelos grandes (70b+) precisam de mais tempo
+    if timeout is None:
+        model_lower = model.lower()
+        if any(x in model_lower for x in ["70b", "65b", "72b", "110b", "180b"]):
+            timeout = 360
+        elif any(x in model_lower for x in ["30b", "34b", "40b"]):
+            timeout = 240
+        else:
+            timeout = 180
 
     lang_names = {
         "pt": "Portuguese (Brazilian)",
@@ -2000,8 +2049,8 @@ def translate_segments_ollama(segs, src, tgt, workdir, model="llama3", cps_origi
                     from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
                     m2m_tok = AutoTokenizer.from_pretrained("facebook/m2m100_418M")
                     m2m_model = AutoModelForSeq2SeqLM.from_pretrained("facebook/m2m100_418M", use_safetensors=True)
-                    device = get_device()
-                    m2m_model = m2m_model.to(device)
+                    # M2M100 roda em CPU para não competir com Ollama na unified memory
+                    m2m_model = m2m_model.to("cpu")
                 except Exception as e:
                     print(f"  [ERRO] Falha ao carregar M2M100: {e}")
 
@@ -2049,6 +2098,15 @@ def translate_segments_ollama(segs, src, tgt, workdir, model="llama3", cps_origi
 
     if fallback_count > 0:
         print(f"[INFO] Fallbacks M2M100 usados: {fallback_count}/{len(segs)} segmentos")
+
+    # Descarregar modelo da memória após tradução para liberar unified memory
+    try:
+        import requests as _req
+        _req.post("http://localhost:11434/api/generate",
+                  json={"model": model, "keep_alive": 0}, timeout=10)
+        print(f"[INFO] Modelo {model} descarregado da memória Ollama")
+    except Exception:
+        pass
 
     print(f"[OK] Traduzido: {len(out)} segmentos")
     return out, json_t, srt_t
@@ -2495,6 +2553,177 @@ def tts_chatterbox(segments, workdir, tgt_lang, voice_sample=None):
         Path(segs_json_path).unlink(missing_ok=True)
 
 # ============================================================================
+# ANÁLISE AUTOMÁTICA — recomendação de parâmetros após etapa 4
+# ============================================================================
+
+def _melhor_modelo_ollama() -> tuple[str, str]:
+    """Retorna (model_id, justificativa) do melhor modelo Ollama instalado.
+
+    Prioriza modelos com bom custo-benefício para tradução PT-BR:
+    - qwen2.5 e qwen3 têm treinamento multilíngue forte
+    - Cap em ~25GB: modelos maiores carregam devagar e travam o servidor
+    - Fallback: maior modelo disponível até 25GB, depois qualquer um
+    """
+    # Ordem de preferência por família (melhor para tradução PT-BR)
+    FAMILIA_PREF = ["qwen2.5", "qwen3", "qwen", "gemma4", "command-r", "llama3"]
+    # Faixa de tamanho ideal: entre 8GB e 25GB
+    SIZE_MIN = 8e9
+    SIZE_MAX = 25e9
+
+    try:
+        import requests as _req
+        resp = _req.get("http://localhost:11434/api/tags", timeout=3)
+        if not resp.ok:
+            return "", ""
+        models = resp.json().get("models", [])
+        if not models:
+            return "", ""
+
+        # Filtrar modelos na faixa ideal e ordenar por família preferida depois por tamanho
+        def score(m):
+            name = m.get("name", "").lower()
+            size = m.get("size", 0)
+            in_range = SIZE_MIN <= size <= SIZE_MAX
+            fam_score = next((len(FAMILIA_PREF) - i for i, f in enumerate(FAMILIA_PREF) if f in name), 0)
+            return (1 if in_range else 0, fam_score, size)
+
+        models.sort(key=score, reverse=True)
+        best = models[0]
+        name = best.get("name", "")
+        size_gb = round(best.get("size", 0) / 1e9, 1)
+        return name, f"modelo local '{name}' ({size_gb}GB)"
+    except Exception:
+        return "", ""
+
+
+def _recomendar_params(cps: float, total_dur: float, expansion: float, input_url: str) -> dict:
+    """Heurística: recomenda content_type e presets baseado em métricas reais."""
+    url = str(input_url).lower()
+    if any(x in url for x in ["tiktok", "instagram", "/reels/", "shorts"]):
+        platform = "short"
+    elif any(x in url for x in ["youtu", "facebook", "fb.com"]):
+        platform = "long"
+    else:
+        platform = "unknown"
+
+    # Recomendação de ASR: parakeet só para inglês (detectado por plataforma)
+    asr = "parakeet" if platform in ("long", "short") else "whisper"
+
+    # Recomendação de TTS: edge (CPU, online, boa qualidade para PT-BR)
+    tts = "edge"
+
+    # Recomendação de tradução: ollama para vídeos longos (qualidade contextual),
+    # m2m100 para curtos (velocidade). Verificar se Ollama está disponível.
+    use_ollama = total_dur > 600
+    ollama_model_id = ""
+    ollama_model_desc = ""
+    if use_ollama:
+        ollama_model_id, ollama_model_desc = _melhor_modelo_ollama()
+        if not ollama_model_id:
+            # Ollama offline ou sem modelos — cair para m2m100
+            use_ollama = False
+
+    translation = "ollama" if use_ollama else "m2m100"
+    trad_just = (
+        f"Ollama ({ollama_model_desc}) para vídeo longo — melhor contexto e naturalidade na tradução."
+        if use_ollama
+        else "M2M100 local — rápido, sem GPU de IA necessária."
+    )
+
+    base = {"tts_engine": tts, "asr_engine": asr, "translation_engine": translation}
+    if use_ollama and ollama_model_id:
+        base["ollama_model"] = ollama_model_id
+
+    # Densidade tem prioridade sobre duracao: fala rapida/densa eh o que causa
+    # corte. Mesmo um video curto, se for denso, precisa de no_truncate + stretch alto.
+    if cps >= 15 or expansion > 1.3:
+        return {**base, "content_type": "curso", "sync_mode": "fit", "maxstretch": 1.4,
+                "no_truncate": True,
+                "justificativa": f"Fala densa ({cps:.1f} CPS), expansão {expansion:.0%}. {trad_just}"}
+    if platform == "short" or total_dur < 180:
+        return {**base, "content_type": "shorts", "sync_mode": "smart", "maxstretch": 1.1,
+                "no_truncate": False, "translation_engine": "m2m100",
+                "justificativa": f"Vídeo curto ({total_dur:.0f}s) — timing exato. M2M100 local para velocidade."}
+    if total_dur > 900:
+        return {**base, "content_type": "palestra", "sync_mode": "smart", "maxstretch": 1.3,
+                "no_truncate": False,
+                "justificativa": f"Vídeo longo ({total_dur/60:.0f} min), ritmo tranquilo. {trad_just}"}
+    return {**base, "content_type": "tutorial", "sync_mode": "extend", "maxstretch": 1.5,
+            "no_truncate": True,
+            "justificativa": f"Duração moderada ({total_dur/60:.1f} min), {cps:.1f} CPS. {trad_just}"}
+
+
+def _justificar_via_ollama(rec: dict, cps: float, total_dur: float, expansion: float) -> str:
+    """Enriquece a justificativa via Ollama (falha silenciosa)."""
+    try:
+        import requests as _req
+        prompt = (
+            f"Em uma frase curta e direta em português, explique por que o tipo '{rec['content_type']}' "
+            f"foi escolhido para um vídeo com CPS={cps:.1f}, duração={total_dur/60:.1f}min, "
+            f"expansão de tradução={expansion:.0%}, sync={rec['sync_mode']}, maxstretch={rec['maxstretch']}. "
+            f"Não use markdown, só o texto simples."
+        )
+        resp = _req.post(
+            "http://localhost:11434/api/generate",
+            json={"model": "qwen2.5:14b", "prompt": prompt, "stream": False},
+            timeout=20,
+        )
+        if resp.ok:
+            return resp.json().get("response", "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _gerar_analysis(segs_trad: list, cps_original: float, args, workdir: "Path") -> dict:
+    """Calcula métricas pós-tradução e gera analysis.json para aprovação do usuário."""
+    total_dur = sum(s["end"] - s["start"] for s in segs_trad)
+    avg_dur = total_dur / len(segs_trad) if segs_trad else 0
+    chars_orig = sum(len(s.get("text_original", "") or s.get("text", "")) for s in segs_trad)
+    chars_trad = sum(len(s.get("text_trad", "")) for s in segs_trad)
+    expansion = chars_trad / chars_orig if chars_orig > 0 else 1.0
+
+    rec = _recomendar_params(cps_original, total_dur, expansion, args.inp)
+    justificativa_ollama = _justificar_via_ollama(rec, cps_original, total_dur, expansion)
+    if justificativa_ollama:
+        rec["justificativa"] = justificativa_ollama
+
+    analysis = {
+        "cps_original": round(cps_original, 1),
+        "total_duration": round(total_dur, 1),
+        "segment_count": len(segs_trad),
+        "avg_segment_duration": round(avg_dur, 2),
+        "translation_expansion": round(expansion, 2),
+        "transcription_sample": " ".join(s.get("text", "") for s in segs_trad[:5]),
+        "recommended": rec,
+    }
+    Path(workdir, "analysis.json").write_text(
+        json.dumps(analysis, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(f"[ANÁLISE] Tipo recomendado: {rec['content_type']} — {rec['justificativa']}", flush=True)
+    return rec
+
+
+def _aplicar_recomendados(args, rec: dict) -> None:
+    """Aplica os params recomendados pela análise que ainda afetam o pipeline.
+
+    Nesta altura ASR e tradução já rodaram, então só valem os de downstream que
+    de fato dependem da análise: sync e maxstretch (no_truncate já foi forçado
+    True na tradução do modo análise, e TTS/voz é escolha do usuário).
+    """
+    if not rec:
+        return
+    if rec.get("sync_mode"):
+        args.sync = rec["sync_mode"]
+    if rec.get("maxstretch") is not None:
+        args.maxstretch = rec["maxstretch"]
+    print(
+        f"[ANÁLISE] Params aplicados automaticamente: sync={args.sync}, maxstretch={args.maxstretch}",
+        flush=True,
+    )
+
+
+# ============================================================================
 # ETAPA 6: TTS (EDGE - PADRAO v4)
 # ============================================================================
 
@@ -2569,9 +2798,15 @@ def tts_edge(segments, workdir, tgt_lang, voice=None, rate="+0%", speaker_voices
     tsv = Path(workdir, "segments.csv")
 
     async def generate_audio(text, output_path, target_dur, voice_to_use):
-        """Gera audio usando Edge TTS"""
-        communicate = edge_tts.Communicate(text, voice_to_use, rate=rate)
+        """Gera audio usando Edge TTS (texto puro).
+
+        IMPORTANTE: edge_tts.Communicate NAO interpreta SSML — passar tags
+        <speak>/<break/> faz o TTS recitar literal "speak", "break time
+        igual 80MS" entre as frases. Edge TTS ja faz pausas naturais em
+        virgulas/pontos sem precisar de breaks explicitos.
+        """
         mp3_path = str(output_path).replace(".wav", ".mp3")
+        communicate = edge_tts.Communicate(text, voice_to_use, rate=rate)
         await communicate.save(mp3_path)
 
         subprocess.run([
@@ -3155,6 +3390,7 @@ def mux_video_extended(video_in, wav_in, out_mp4, bitrate, extensions, workdir):
 
     if not extensions:
         # Sem extensoes, usar mux normal
+        # -ar 48000 -ac 2: previne pre-echo do AAC em silencio->fala (clique "spik" entre segmentos)
         sh(["ffmpeg", "-y",
             "-i", str(video_in),
             "-i", str(wav_in),
@@ -3249,7 +3485,6 @@ def mux_video_extended(video_in, wav_in, out_mp4, bitrate, extensions, workdir):
             "-c:v", "copy",
             "-c:a", "aac",
             "-b:a", bitrate,
-            "-ar", "48000", "-ac", "2",
             str(out_mp4)])
         print(f"[OK] Video final: {out_mp4}")
         return
@@ -3271,6 +3506,7 @@ def mux_video_extended(video_in, wav_in, out_mp4, bitrate, extensions, workdir):
         str(video_extended)])
 
     # Mux final com audio
+    # -ar 48000 -ac 2: previne pre-echo do AAC em silencio->fala (clique "spik" entre segmentos)
     if video_extended.exists():
         print("[INFO] Mixando audio com video estendido...")
         sh(["ffmpeg", "-y",
@@ -3453,6 +3689,7 @@ def mux_video(video_in, wav_in, out_mp4, bitrate):
     print("=== ETAPA 10: Mux Final ===")
     print("="*60)
 
+    # -ar 48000 -ac 2: previne pre-echo do AAC em silencio->fala (clique "spik" entre segmentos)
     sh(["ffmpeg", "-y",
         "-i", str(video_in),
         "-i", str(wav_in),
@@ -3461,7 +3698,7 @@ def mux_video(video_in, wav_in, out_mp4, bitrate):
         "-c:v", "copy",
         "-c:a", "aac",
         "-b:a", bitrate,
-            "-ar", "48000", "-ac", "2",
+        "-ar", "48000", "-ac", "2",
         str(out_mp4)])
 
     print(f"[OK] Video final: {out_mp4}")
@@ -3635,7 +3872,7 @@ Exemplos:
     ap.add_argument("--sync", choices=["none", "fit", "pad", "smart", "extend"], default="smart",
                    help="Modo de sincronizacao (extend=voz natural, video estende com freeze frames)")
     ap.add_argument("--tolerance", type=float, default=0.1, help="Tolerancia sync")
-    ap.add_argument("--maxstretch", type=float, default=1.3, help="Max compressao (1.3=30%)")
+    ap.add_argument("--maxstretch", type=float, default=1.3, help="Max compressao (1.3=30%%)")
     ap.add_argument("--no-rubberband", action="store_true", help="Desabilitar rubberband (usar ffmpeg atempo)")
     ap.add_argument("--no-truncate", action="store_true",
                    help="Nao truncar texto traduzido (frases completas, sync ajusta duracao)")
@@ -3653,7 +3890,22 @@ Exemplos:
     ap.add_argument("--qualidade", choices=["rapido", "balanceado", "maximo"], default="balanceado",
                    help="Preset de qualidade")
 
+    # Modo análise
+    ap.add_argument("--analyze", action="store_true",
+                   help="Rodar análise (etapas 1-4), calcular params recomendados e segui-los automaticamente")
+    ap.add_argument("--review", action="store_true",
+                   help="Com --analyze: pausar após a análise para aprovação manual (salva analysis.json, sai com código 2)")
+    ap.add_argument("--pause-after-translate", action="store_true",
+                   help="Alias legado de --analyze --review (mantido para compatibilidade)")
+    ap.add_argument("--resume-from-stage", type=int, default=None,
+                   help="Retomar a partir da etapa N usando dados já salvos no workdir")
+
     args = ap.parse_args()
+
+    # Compat: --pause-after-translate = análise com revisão manual
+    if getattr(args, "pause_after_translate", False):
+        args.analyze = True
+        args.review = True
 
     # Aplicar presets de qualidade
     if args.qualidade == "rapido":
@@ -3686,148 +3938,232 @@ Exemplos:
     workdir = Path("dub_work")
     workdir.mkdir(exist_ok=True)
 
-    video_title = ""
-    if is_youtube_url(video_in):
-        video_in, video_title = download_youtube(video_in, workdir)
-    else:
-        video_in = Path(video_in).resolve()
-        if not video_in.exists():
-            print(f"[ERRO] Arquivo nao encontrado: {video_in}")
-            sys.exit(1)
-        video_title = video_in.stem
-
-    outdir = Path(args.outdir)
-    outdir.mkdir(exist_ok=True)
-
-    if args.out:
-        out_mp4 = Path(args.out)
-    else:
-        out_mp4 = outdir / f"{Path(video_in).stem}_dublado.mp4"
-
-    # Mostrar configuracao
-    print(f"\n[CONFIG] v{VERSION}")
-    print(f"  Entrada: {video_in}")
-    print(f"  Saida: {out_mp4}")
-    print(f"  Idiomas: {args.src} -> {args.tgt}")
-    print(f"  Tradutor: {args.tradutor}" + (f" ({args.modelo})" if args.tradutor == "ollama" else ""))
-    print(f"  TTS: {args.tts}" + (" (clonagem)" if args.clonar_voz else ""))
-    print(f"  Diarizacao: {'Sim' if args.diarize else 'Nao'}")
-    print(f"  Sync: {args.sync} (tol: {args.tolerance}, max: {args.maxstretch})")
-    print(f"  Qualidade: {args.qualidade}")
-
-    # Dicionario para armazenar tempos de cada etapa
     import time
-    tempos_etapas = {}
-    tempo_inicio_total = time.time()
 
-    # ========== ETAPA 1-2: Extracao ==========
-    t_etapa = time.time()
-    print("\n" + "="*60)
-    print("=== ETAPA 1-2: Validacao e Extracao ===")
-    print("="*60)
+    # cps_original nao eh recalculado no resume — setado aqui pra evitar
+    # UnboundLocalError no metadata final quando vem via --resume-from-stage 5
+    cps_original = 0.0
 
-    audio_src = Path(workdir, "audio_src.wav")
-    sh(["ffmpeg", "-y", "-i", str(video_in),
-        "-vn", "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le",
-        str(audio_src)])
+    # ========== RESUME: pular etapas 1-4 se dados já existem ==========
+    if getattr(args, "resume_from_stage", None) == 5:
+        trad_json_path = workdir / "asr_trad.json"
+        if not trad_json_path.exists():
+            trad_json_path = workdir / "trad.json"
+        if not trad_json_path.exists():
+            print(f"[ERRO] Resume: asr_trad.json não encontrado em {workdir}")
+            sys.exit(1)
+        raw = json.loads(trad_json_path.read_text(encoding="utf-8"))
+        # asr_trad.json pode ser {"segments": [...]} ou lista direta
+        segs_trad = raw["segments"] if isinstance(raw, dict) and "segments" in raw else raw
 
-    # Extrair amostra para clonagem de voz se necessario
-    voice_sample = None
-    if args.clonar_voz:
-        voice_sample = extract_voice_sample(audio_src, workdir)
+        # Verificar se a engine de tradução aprovada difere da usada na análise
+        recorded_model = raw.get("model", "") if isinstance(raw, dict) else ""
+        if args.tradutor == "ollama":
+            approved_model_key = f"ollama/{args.modelo}"
+        else:
+            approved_model_key = "m2m100"
+        needs_retranslation = recorded_model and not recorded_model.startswith(approved_model_key.split("/")[0] if args.tradutor != "ollama" else "ollama")
+        # Also re-translate if Ollama was requested but a different model was approved
+        if args.tradutor == "ollama" and recorded_model.startswith("ollama/"):
+            recorded_ollama_model = recorded_model[len("ollama/"):]
+            if recorded_ollama_model != args.modelo:
+                needs_retranslation = True
+        if needs_retranslation:
+            asr_json_path = workdir / "asr.json"
+            if asr_json_path.exists():
+                asr_raw = json.loads(asr_json_path.read_text(encoding="utf-8"))
+                segs_asr = asr_raw["segments"] if isinstance(asr_raw, dict) and "segments" in asr_raw else asr_raw
+                src_lang_asr = asr_raw.get("source_language") or asr_raw.get("language") if isinstance(asr_raw, dict) else args.src
+                no_truncate = getattr(args, "no_truncate", False)
+                print(f"[RESUME] Re-traduzindo {len(segs_asr)} segmentos com {args.tradutor} (anterior: {recorded_model})", flush=True)
+                if args.tradutor == "ollama":
+                    result = translate_segments_ollama(segs_asr, src_lang_asr, args.tgt, workdir, args.modelo, None, no_truncate)
+                    if result is None:
+                        print("[RESUME] Ollama falhou, fallback M2M100...", flush=True)
+                        segs_trad, _, _ = translate_segments_m2m100(segs_asr, src_lang_asr, args.tgt, workdir, getattr(args, "large_model", False), None, no_truncate)
+                    else:
+                        segs_trad, _, _ = result
+                else:
+                    segs_trad, _, _ = translate_segments_m2m100(segs_asr, src_lang_asr, args.tgt, workdir, getattr(args, "large_model", False), None, no_truncate)
+            else:
+                print(f"[AVISO] Resume: asr.json não encontrado, usando tradução existente ({recorded_model})", flush=True)
 
-    # Obter duracao do video/audio
-    video_duration_s = 0
-    try:
-        import subprocess as _sp
-        probe = _sp.run(["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-                         "-of", "csv=p=0", str(audio_src)], capture_output=True, text=True, timeout=10)
-        video_duration_s = round(float(probe.stdout.strip()), 1)
-        print(f"[INFO] Duracao do video: {int(video_duration_s//60)}m{int(video_duration_s%60)}s")
-    except Exception:
-        pass
-    save_checkpoint(workdir, 2, "extraction", {"video_duration_s": video_duration_s, "video_title": video_title})
-    tempos_etapas["1-2_extracao"] = time.time() - t_etapa
+        audio_src_candidates = list(workdir.glob("audio_src.wav")) + list(workdir.glob("audio*.wav"))
+        if not audio_src_candidates:
+            print(f"[ERRO] Resume: audio_src.wav não encontrado em {workdir}")
+            sys.exit(1)
+        audio_src = audio_src_candidates[0]
+        video_in = audio_src
 
-    # ========== ETAPA 3: Transcricao ==========
-    t_etapa = time.time()
-    if args.asr == "parakeet":
-        asr_json, asr_srt, segs, detected_lang = transcribe_parakeet(
-            audio_src, workdir, args.src,
-            model_name=args.parakeet_model,
-            segment_pause=args.segment_pause,
-            segment_max_words=args.segment_max_words,
-            diarize=args.diarize,
-            num_speakers=args.num_speakers,
-            diarize_engine=args.diarize_engine,
-        )
-    elif args.asr == "whisper":
-        # Auto-selecionar: usar OpenAI Whisper (PyTorch GPU) se CTranslate2 nao tem CUDA
-        import torch
-        use_openai_whisper = False
-        if torch.cuda.is_available():
+        # Recuperar video original do config salvo para mux final
+        config_path = workdir.parent / "config.json"
+        if config_path.exists():
             try:
-                import ctranslate2
-                ctranslate2.get_supported_compute_types("cuda")
-            except (ValueError, Exception):
-                # CTranslate2 sem CUDA - tentar openai-whisper para usar GPU
-                try:
-                    import whisper
-                    use_openai_whisper = True
-                    print("[INFO] CTranslate2 sem CUDA - usando OpenAI Whisper com PyTorch GPU")
-                except ImportError:
-                    print("[WARN] openai-whisper nao instalado - Whisper rodara em CPU via CTranslate2")
+                saved_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+                video_original = saved_cfg.get("input", "")
+                if video_original and is_youtube_url(video_original):
+                    print(f"[RESUME] Re-baixando vídeo original para mux...")
+                    video_in, _ = download_youtube(video_original, workdir)
+                elif video_original and Path(video_original).exists():
+                    video_in = Path(video_original)
+            except Exception:
+                pass
 
-        if use_openai_whisper:
-            asr_json, asr_srt, segs, detected_lang = transcribe_openai_whisper(
-                audio_src, workdir, args.src, args.whisper_model,
-                diarize=args.diarize, num_speakers=args.num_speakers,
+        outdir = Path(args.outdir)
+        outdir.mkdir(exist_ok=True)
+        out_mp4 = Path(args.out) if args.out else outdir / "dublado.mp4"
+        voice_sample = None
+        video_title = ""
+        tempos_etapas = {}
+        tempo_inicio_total = time.time()
+        print(f"[RESUME] Retomando da etapa 5 com {len(segs_trad)} segmentos", flush=True)
+
+    else:
+        video_title = ""
+        if is_youtube_url(video_in):
+            video_in, video_title = download_youtube(video_in, workdir)
+        else:
+            video_in = Path(video_in).resolve()
+            if not video_in.exists():
+                print(f"[ERRO] Arquivo nao encontrado: {video_in}")
+                sys.exit(1)
+            video_title = video_in.stem
+
+        outdir = Path(args.outdir)
+        outdir.mkdir(exist_ok=True)
+        out_mp4 = Path(args.out) if args.out else outdir / f"{Path(video_in).stem}_dublado.mp4"
+
+        print(f"\n[CONFIG] v{VERSION}")
+        print(f"  Entrada: {video_in}")
+        print(f"  Saida: {out_mp4}")
+        print(f"  Idiomas: {args.src} -> {args.tgt}")
+        print(f"  Tradutor: {args.tradutor}" + (f" ({args.tradutor})" if args.tradutor == "ollama" else ""))
+        print(f"  TTS: {args.tts}" + (" (clonagem)" if args.clonar_voz else ""))
+        print(f"  Diarizacao: {'Sim' if args.diarize else 'Nao'}")
+        print(f"  Sync: {args.sync} (tol: {args.tolerance}, max: {args.maxstretch})")
+
+        tempos_etapas = {}
+        tempo_inicio_total = time.time()
+
+    if not getattr(args, "resume_from_stage", None):
+        # ========== ETAPA 1-2: Extracao ==========
+        t_etapa = time.time()
+        print("\n" + "="*60)
+        print("=== ETAPA 1-2: Validacao e Extracao ===")
+        print("="*60)
+
+        audio_src = Path(workdir, "audio_src.wav")
+        sh(["ffmpeg", "-y", "-i", str(video_in),
+            "-vn", "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le",
+            str(audio_src)])
+
+        # Extrair amostra para clonagem de voz se necessario
+        voice_sample = None
+        if args.clonar_voz:
+            voice_sample = extract_voice_sample(audio_src, workdir)
+
+        # Obter duracao do video/audio
+        video_duration_s = 0
+        try:
+            import subprocess as _sp
+            probe = _sp.run(["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+                             "-of", "csv=p=0", str(audio_src)], capture_output=True, text=True, timeout=10)
+            video_duration_s = round(float(probe.stdout.strip()), 1)
+            print(f"[INFO] Duracao do video: {int(video_duration_s//60)}m{int(video_duration_s%60)}s")
+        except Exception:
+            pass
+        save_checkpoint(workdir, 2, "extraction", {"video_duration_s": video_duration_s, "video_title": video_title})
+        tempos_etapas["1-2_extracao"] = time.time() - t_etapa
+
+        # ========== ETAPA 3: Transcricao ==========
+        t_etapa = time.time()
+        if args.asr == "parakeet":
+            asr_json, asr_srt, segs, detected_lang = transcribe_parakeet(
+                audio_src, workdir, args.src,
+                model_name=args.parakeet_model,
+                segment_pause=args.segment_pause,
+                segment_max_words=args.segment_max_words,
+                diarize=args.diarize,
+                num_speakers=args.num_speakers,
                 diarize_engine=args.diarize_engine,
             )
+        elif args.asr == "whisper":
+            import torch
+            use_openai_whisper = False
+            if torch.cuda.is_available():
+                try:
+                    import ctranslate2
+                    ctranslate2.get_supported_compute_types("cuda")
+                except (ValueError, Exception):
+                    try:
+                        import whisper
+                        use_openai_whisper = True
+                        print("[INFO] CTranslate2 sem CUDA - usando OpenAI Whisper com PyTorch GPU")
+                    except ImportError:
+                        print("[WARN] openai-whisper nao instalado - Whisper rodara em CPU via CTranslate2")
+
+            if use_openai_whisper:
+                asr_json, asr_srt, segs, detected_lang = transcribe_openai_whisper(
+                    audio_src, workdir, args.src, args.whisper_model,
+                    diarize=args.diarize, num_speakers=args.num_speakers,
+                    diarize_engine=args.diarize_engine,
+                )
+            else:
+                asr_json, asr_srt, segs, detected_lang = transcribe_faster_whisper(
+                    audio_src, workdir, args.src, args.whisper_model,
+                    diarize=args.diarize, num_speakers=args.num_speakers,
+                    diarize_engine=args.diarize_engine,
+                )
         else:
             asr_json, asr_srt, segs, detected_lang = transcribe_faster_whisper(
                 audio_src, workdir, args.src, args.whisper_model,
                 diarize=args.diarize, num_speakers=args.num_speakers,
                 diarize_engine=args.diarize_engine,
             )
-    else:
-        asr_json, asr_srt, segs, detected_lang = transcribe_faster_whisper(
-            audio_src, workdir, args.src, args.whisper_model,
-            diarize=args.diarize, num_speakers=args.num_speakers,
-            diarize_engine=args.diarize_engine,
-        )
-    save_checkpoint(workdir, 3, "transcription")
-    tempos_etapas["3_transcricao"] = time.time() - t_etapa
+        save_checkpoint(workdir, 3, "transcription")
+        tempos_etapas["3_transcricao"] = time.time() - t_etapa
 
-    # Usar idioma detectado se nao foi especificado
-    src_lang = detected_lang or args.src
-    if not args.src:
-        print(f"[INFO] Usando idioma detectado: {src_lang}")
+        # Usar idioma detectado se nao foi especificado
+        src_lang = detected_lang or args.src
+        if not args.src:
+            print(f"[INFO] Usando idioma detectado: {src_lang}")
 
-    # Calcular CPS original para traducao adaptativa
-    cps_original = calcular_cps_original(audio_src, segs)
-    print(f"[INFO] CPS original calculado: {cps_original:.1f}")
+        # Calcular CPS original para traducao adaptativa
+        cps_original = calcular_cps_original(audio_src, segs)
+        print(f"[INFO] CPS original calculado: {cps_original:.1f}")
 
-    # ========== ETAPA 4: Traducao ==========
-    t_etapa = time.time()
-    no_truncate = getattr(args, 'no_truncate', False)
-    if no_truncate:
-        print("[INFO] Modo --no-truncate ativado: frases completas, sync ajusta duracao")
-    if args.tradutor == "ollama":
-        result = translate_segments_ollama(segs, src_lang, args.tgt, workdir, args.modelo, cps_original, no_truncate)
-        if result is None:
-            print("[INFO] Fallback para M2M100...")
+        # ========== ETAPA 4: Traducao ==========
+        t_etapa = time.time()
+        no_truncate = getattr(args, 'no_truncate', False)
+        # Na fase de análise nunca truncar — texto completo, o sync ajusta a duração depois
+        if getattr(args, "analyze", False):
+            no_truncate = True
+        if no_truncate:
+            print("[INFO] Modo --no-truncate ativado: frases completas, sync ajusta duracao")
+        if args.tradutor == "ollama":
+            result = translate_segments_ollama(segs, src_lang, args.tgt, workdir, args.modelo, cps_original, no_truncate)
+            if result is None:
+                print("[INFO] Fallback para M2M100...")
+                segs_trad, trad_json, trad_srt = translate_segments_m2m100(
+                    segs, src_lang, args.tgt, workdir, args.large_model, cps_original, no_truncate
+                )
+            else:
+                segs_trad, trad_json, trad_srt = result
+        else:
             segs_trad, trad_json, trad_srt = translate_segments_m2m100(
                 segs, src_lang, args.tgt, workdir, args.large_model, cps_original, no_truncate
             )
-        else:
-            segs_trad, trad_json, trad_srt = result
-    else:
-        segs_trad, trad_json, trad_srt = translate_segments_m2m100(
-            segs, src_lang, args.tgt, workdir, args.large_model, cps_original, no_truncate
-        )
-    save_checkpoint(workdir, 4, "translation")
-    tempos_etapas["4_traducao"] = time.time() - t_etapa
+        save_checkpoint(workdir, 4, "translation")
+        tempos_etapas["4_traducao"] = time.time() - t_etapa
+
+    # ========== ANÁLISE (etapas 1-4 concluídas) ==========
+    if getattr(args, "analyze", False):
+        rec = _gerar_analysis(segs_trad, cps_original, args, workdir)
+        if getattr(args, "review", False):
+            print("[ANÁLISE] Aguardando aprovação do usuário. Pipeline pausado.", flush=True)
+            sys.exit(2)  # código 2 = waiting_approval
+        # Sem revisão: aplica os params recomendados e segue direto pra execução
+        _aplicar_recomendados(args, rec)
 
     # ========== ETAPA 5: Split ==========
     t_etapa = time.time()
