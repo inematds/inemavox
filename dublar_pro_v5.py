@@ -479,10 +479,13 @@ def download_youtube(url, output_dir):
         "js_runtimes": {"node": {}},
     }
 
-    # Cookies do Firefox para YouTube/Facebook
-    is_youtube = "youtube.com" in url or "youtu.be" in url
-    is_facebook = "facebook.com" in url or "fb.com" in url
-    if is_youtube or is_facebook:
+    # Cookies do Firefox para YouTube/Facebook/Instagram/TikTok
+    _u = url.lower()
+    needs_cookies = any(d in _u for d in (
+        "youtube.com", "youtu.be", "facebook.com", "fb.com",
+        "instagram.com", "instagr.am", "tiktok.com",
+    ))
+    if needs_cookies:
         from baixar_v1 import _find_firefox_profile
         firefox_profile = _find_firefox_profile()
         if firefox_profile:

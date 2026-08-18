@@ -62,18 +62,50 @@ PROVIDER_BASE_URLS = {
 }
 
 
-def write_checkpoint(workdir: Path, step_num: int, step_id: str, step_name: str):
-    """Escreve checkpoint no mesmo formato do dublar_pro_v5.py."""
+def write_checkpoint(workdir: Path, step_num: int, step_id: str, step_name: str, data: dict | None = None):
+    """Escreve checkpoint no mesmo formato do dublar_pro_v5.py, preservando dados anteriores."""
+    cp_path = workdir / "dub_work" / "checkpoint.json"
+    existing_data: dict = {}
+    if cp_path.exists():
+        try:
+            existing_data = json.loads(cp_path.read_text()).get("data", {}) or {}
+        except Exception:
+            pass
     cp = {
         "last_step_num": step_num,
         "last_step": step_id,
         "last_step_name": step_name,
         "timestamp": time.time(),
+        "data": {**existing_data, **(data or {})},
     }
-    cp_path = workdir / "dub_work" / "checkpoint.json"
     cp_path.parent.mkdir(parents=True, exist_ok=True)
     cp_path.write_text(json.dumps(cp, indent=2))
     print(f"[checkpoint] etapa {step_num}: {step_name}", flush=True)
+
+
+def _get_video_meta(workdir: Path, source: Path, input_val: str) -> tuple[str, float]:
+    """Retorna (titulo, duracao_s) do video."""
+    title = ""
+    info_json = workdir / "dub_work" / "source.info.json"
+    if info_json.exists():
+        try:
+            info = json.loads(info_json.read_text(encoding="utf-8"))
+            title = str(info.get("title", "") or "")
+        except Exception:
+            pass
+    if not title and not input_val.startswith("http"):
+        title = source.stem
+    dur_s = 0.0
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "csv=p=0", str(source)],
+            capture_output=True, text=True, timeout=10,
+        )
+        dur_s = round(float(probe.stdout.strip()), 1)
+    except Exception:
+        pass
+    return title, dur_s
 
 
 def download_input(input_val: str, workdir: Path) -> Path:
@@ -88,8 +120,29 @@ def download_input(input_val: str, workdir: Path) -> Path:
             "--merge-output-format", "mp4",
             "--output", str(out_template),
             "--no-playlist",
-            input_val,
+            "--write-info-json",
         ]
+        # Mesma regra do transcrever_v1: sites que bloqueiam download anonimo
+        # precisam dos cookies do profile do Firefox que tem a sessao logada.
+        host_lower = input_val.lower()
+        needs_cookies = any(d in host_lower for d in (
+            "tiktok.com", "facebook.com", "fb.com", "youtube.com", "youtu.be",
+            "instagram.com", "instagr.am",
+        ))
+        if needs_cookies:
+            try:
+                import sys as _sys
+                _sys.path.insert(0, str(Path(__file__).resolve().parent))
+                from baixar_v1 import _find_firefox_profile
+                _profile = _find_firefox_profile()
+            except Exception:
+                _profile = None
+            if _profile:
+                cmd += ["--cookies-from-browser", f"firefox:{_profile}"]
+                print(f"[download] cookies do Firefox: {Path(_profile).name}", flush=True)
+            else:
+                cmd += ["--cookies-from-browser", "firefox"]
+        cmd += [input_val]
         result = subprocess.run(cmd, capture_output=False)
         if result.returncode != 0:
             raise RuntimeError(f"yt-dlp falhou com codigo {result.returncode}")
@@ -629,7 +682,9 @@ def main():
         if args.mode == "manual":
             # Etapa 1: Download
             source = download_input(args.input, workdir)
-            write_checkpoint(workdir, 1, "download", "Download")
+            _vid_title, _vid_dur = _get_video_meta(workdir, source, args.input)
+            write_checkpoint(workdir, 1, "download", "Download",
+                             data={"video_title": _vid_title, "video_duration_s": _vid_dur})
 
             # Etapa 2: Cutting
             timestamps = parse_timestamps(args.timestamps)
@@ -649,7 +704,9 @@ def main():
         else:  # viral / topics
             # Etapa 1: Download
             source = download_input(args.input, workdir)
-            write_checkpoint(workdir, 1, "download", "Download")
+            _vid_title, _vid_dur = _get_video_meta(workdir, source, args.input)
+            write_checkpoint(workdir, 1, "download", "Download",
+                             data={"video_title": _vid_title, "video_duration_s": _vid_dur})
 
             if args.split_equal:
                 # Modo: dividir em partes iguais (sem IA)

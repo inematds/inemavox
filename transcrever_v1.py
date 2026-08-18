@@ -99,7 +99,22 @@ def download_input(input_val: str, workdir: Path) -> Path:
             "instagram.com", "instagr.am",
         ))
         if needs_cookies:
-            cmd += ["--cookies-from-browser", "firefox"]
+            # Sem profile explicito o yt-dlp segue o profiles.ini, que aqui aponta
+            # para um profile vazio (sem sessao do Instagram) — o download ia
+            # anonimo e morria com "login required" mesmo com o Firefox logado.
+            # _find_firefox_profile() acha o profile que tem cookies de verdade.
+            try:
+                import sys as _sys
+                _sys.path.insert(0, str(Path(__file__).resolve().parent))
+                from baixar_v1 import _find_firefox_profile
+                _profile = _find_firefox_profile()
+            except Exception:
+                _profile = None
+            if _profile:
+                cmd += ["--cookies-from-browser", f"firefox:{_profile}"]
+                print(f"[download] cookies do Firefox: {Path(_profile).name}", flush=True)
+            else:
+                cmd += ["--cookies-from-browser", "firefox"]
         cmd += [input_val]
         result = subprocess.run(cmd, capture_output=False)
         if result.returncode != 0:
