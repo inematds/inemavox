@@ -433,6 +433,8 @@ def _build_prompts(
 
 def _parse_llm_response(content: str, provider: str) -> list[dict]:
     """Parseia a resposta do LLM extraindo o array JSON."""
+    # Modelos de raciocinio (qwen3) podem prefixar a resposta com <think>...</think>
+    content = re.sub(r"<think>[\s\S]*?</think>", "", content).strip()
     # JSON direto
     try:
         data = json.loads(content)
@@ -467,7 +469,7 @@ def _call_ollama(system: str, user: str, model: str, ollama_url: str) -> str:
     # Ajusta num_ctx dinamicamente: min 8k, max 128k, baseado no tamanho real do prompt
     prompt_tokens = _estimate_tokens(system + user)
     # Arredonda para cima para o próximo múltiplo de 8192, com margem para a resposta
-    num_ctx = max(8192, min(131072, ((prompt_tokens + 4096) // 8192 + 1) * 8192))
+    num_ctx = max(8192, min(65536, ((prompt_tokens + 4096) // 8192 + 1) * 8192))
     print(f"[llm] prompt ~{prompt_tokens} tokens → num_ctx={num_ctx}", flush=True)
 
     payload = {
@@ -477,6 +479,7 @@ def _call_ollama(system: str, user: str, model: str, ollama_url: str) -> str:
             {"role": "user", "content": user},
         ],
         "stream": True,
+        "think": False,
         "options": {"temperature": 0.3, "num_ctx": num_ctx},
     }
     req = urllib.request.Request(
@@ -601,7 +604,7 @@ def analyze_viral(
     min_dur: int | None = None,
     max_dur: int | None = None,
     provider: str = "ollama",
-    ollama_model: str = "qwen2.5:7b",
+    ollama_model: str = "qwen3.8-64k:latest",
     ollama_url: str = "http://localhost:11434",
     llm_model: str = "",
     llm_api_key: str = "",
@@ -642,7 +645,7 @@ def main():
     parser.add_argument("--outdir", required=True, help="Diretorio de saida para clips")
     parser.add_argument("--mode", default="manual", choices=["manual", "viral", "topics"])
     parser.add_argument("--timestamps", default="", help="Ex: 00:30-02:15,05:00-07:30")
-    parser.add_argument("--ollama-model", default="qwen2.5:7b", dest="ollama_model")
+    parser.add_argument("--ollama-model", default="qwen3.8-64k:latest", dest="ollama_model")
     parser.add_argument("--num-clips", type=int, default=5, dest="num_clips")
     parser.add_argument("--min-duration", type=int, default=30, dest="min_duration")
     parser.add_argument("--max-duration", type=int, default=120, dest="max_duration")

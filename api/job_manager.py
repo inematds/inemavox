@@ -127,6 +127,25 @@ class Job:
         self._last_stage_num = 0
         self._last_stage_start = 0.0
         self._user_cancelled = False  # True apenas se o usuario clicou em Cancelar
+        self.analysis: dict | None = None          # dados de analysis.json (modo análise)
+        self.recommended_params: dict | None = None
+
+    @property
+    def analyzed(self) -> bool:
+        return (self.workdir / "analyzed.flag").exists()
+
+    def set_analyzed(self, value: bool) -> bool:
+        flag = self.workdir / "analyzed.flag"
+        try:
+            if value:
+                self.workdir.mkdir(parents=True, exist_ok=True)
+                flag.write_text(str(int(time.time())))
+            else:
+                if flag.exists():
+                    flag.unlink()
+            return True
+        except Exception:
+            return False
 
     @property
     def duration(self) -> float:
@@ -187,6 +206,29 @@ class Job:
         self._recover_if_output_exists()
         checkpoint = self._read_checkpoint()
         progress = self._calc_progress(checkpoint)
+
+        # Extrair video_title e video_duration_s do checkpoint ou de arquivos de resumo
+        cp_data = checkpoint.get("data", {}) or {}
+        video_title = cp_data.get("video_title", "") or ""
+        video_duration_s = cp_data.get("video_duration_s", 0) or 0
+
+        if not video_title or not video_duration_s:
+            ts_path = self.workdir / "transcription" / "transcript_summary.json"
+            if ts_path.exists():
+                try:
+                    ts = json.loads(ts_path.read_text())
+                    if not video_title:
+                        video_title = ts.get("title", "") or ""
+                    if not video_duration_s:
+                        video_duration_s = ts.get("duration_s", 0) or 0
+                except Exception:
+                    pass
+
+        if not video_title:
+            cfg_input = self.config.get("input") or self.config.get("url") or ""
+            if cfg_input and not cfg_input.startswith("http"):
+                video_title = Path(cfg_input).stem
+
         return {
             "id": self.id,
             "status": self.status,
@@ -200,6 +242,11 @@ class Job:
             "checkpoint": checkpoint,
             "progress": progress,
             "stage_times": self.stage_times,
+            "video_title": video_title,
+            "video_duration_s": video_duration_s,
+            "analyzed": self.analyzed,
+            "analysis": self.analysis,
+            "recommended_params": self.recommended_params,
         }
 
     def _read_checkpoint(self) -> dict:
@@ -669,9 +716,28 @@ class JobManager:
 
                 if exit_code == 0:
                     job.status = "completed"
-                    # Salvar estatisticas para aprendizado (apenas dubbing)
+                    # Análise auto-aplicada (sem review): expor o que foi decidido, se houver
+                    analysis_path = job.workdir / "dub_work" / "analysis.json"
+                    if analysis_path.exists():
+                        try:
+                            data = json.loads(analysis_path.read_text(encoding="utf-8"))
+                            job.analysis = data
+                            job.recommended_params = data.get("recommended", {})
+                        except Exception:
+                            pass
                     if job_type == "dubbing":
                         record_job_complete(job.config, job.stage_times, job.duration, job.device)
+                elif exit_code == 2:
+                    # Modo análise: pipeline pausou após etapa 4, aguarda aprovação
+                    job.status = "waiting_approval"
+                    analysis_path = job.workdir / "dub_work" / "analysis.json"
+                    if analysis_path.exists():
+                        try:
+                            data = json.loads(analysis_path.read_text(encoding="utf-8"))
+                            job.analysis = data
+                            job.recommended_params = data.get("recommended", {})
+                        except Exception:
+                            pass
                 elif job._user_cancelled or exit_code == -signal.SIGTERM:
                     # Cancelado pelo usuario (via botao Cancelar ou SIGTERM explicito)
                     job.status = "cancelled"
@@ -1066,6 +1132,22 @@ class JobManager:
         if config.get("seed"):
             cmd.extend(["--seed", str(config["seed"])])
 
+        # Curso: segmentos maiores para frases mais completas
+        if config.get("content_type") == "curso":
+            cmd.extend(["--segment-max-words", "30", "--segment-pause", "0.5"])
+        # Resumo falado no final
+        if config.get("content_type") == "curso" or config.get("summary"):
+            cmd.append("--summary")
+        # Análise: roda etapas 1-4 e calcula params recomendados.
+        # Por padrão aplica os params e segue direto; com review=True, pausa para aprovação.
+        if config.get("content_type") == "analise":
+            cmd.append("--analyze")
+            if config.get("review"):
+                cmd.append("--review")
+        # Resume: retomar a partir da etapa N
+        if config.get("_resume_from_stage"):
+            cmd.extend(["--resume-from-stage", str(config["_resume_from_stage"])])
+
         return cmd
 
     def _build_local_command(self, job: Job) -> list:
@@ -1128,7 +1210,38 @@ class JobManager:
         if config.get("seed"):
             cmd.extend(["--seed", str(config["seed"])])
 
+        # Curso: segmentos maiores para frases mais completas
+        if config.get("content_type") == "curso":
+            cmd.extend(["--segment-max-words", "30", "--segment-pause", "0.5"])
+        # Resumo falado no final
+        if config.get("content_type") == "curso" or config.get("summary"):
+            cmd.append("--summary")
+        # Análise: roda etapas 1-4 e calcula params recomendados.
+        # Por padrão aplica os params e segue direto; com review=True, pausa para aprovação.
+        if config.get("content_type") == "analise":
+            cmd.append("--analyze")
+            if config.get("review"):
+                cmd.append("--review")
+        # Resume: retomar a partir da etapa N com parâmetros aprovados
+        if config.get("_resume_from_stage"):
+            cmd.extend(["--resume-from-stage", str(config["_resume_from_stage"])])
+
         return cmd
+
+    async def resume_job(self, job_id: str, approved_config: dict) -> None:
+        """Retoma job pausado em waiting_approval com parâmetros aprovados."""
+        job = self.jobs.get(job_id)
+        if not job:
+            raise ValueError(f"Job {job_id} não encontrado")
+        if job.status != "waiting_approval":
+            raise ValueError(f"Job {job_id} não está em waiting_approval (status: {job.status})")
+        job.config.update(approved_config)
+        (job.workdir / "config.json").write_text(
+            json.dumps(job.config, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        job.status = "queued"
+        job.finished_at = None
+        await self.queue.put(job_id)
 
     async def cancel_job(self, job_id: str) -> bool:
         job = self.jobs.get(job_id)

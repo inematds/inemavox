@@ -108,7 +108,7 @@ function NewJob() {
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [srcLang, setSrcLang] = useState("");
   const [tgtLang, setTgtLang] = useState("pt");
-  const [contentType, setContentType] = useState("palestra");
+  const [contentType, setContentType] = useState("analise");
   const [ttsEngine, setTtsEngine] = useState("edge");
   const [voice, setVoice] = useState("");
   const [asrEngine, setAsrEngine] = useState("whisper");
@@ -350,8 +350,39 @@ function NewJob() {
 
         {/* Tipo de Conteudo */}
         <section className="border border-gray-800 rounded-lg p-5">
-          <h2 className="text-lg font-semibold mb-4">Tipo de Conteudo</h2>
-          {openSections.has("ct") ? (
+          <h2 className="text-lg font-semibold mb-3">Tipo de Conteudo</h2>
+          {contentType === "analise" ? (
+            /* Modo análise: exibe info + permite trocar para tipo manual */
+            <div className="space-y-3">
+              <div className="flex items-start gap-3 p-3 rounded-lg border border-purple-500/50 bg-purple-500/10">
+                <div className="flex-1">
+                  <div className="font-medium text-purple-200">Análise Automática</div>
+                  <div className="text-sm text-gray-400 mt-0.5">O sistema vai analisar o vídeo e recomendar os parâmetros ideais antes de dublar.</div>
+                </div>
+                <button type="button" onClick={() => toggleSection("ct")}
+                  className="text-xs text-gray-500 hover:text-gray-300 whitespace-nowrap mt-1">
+                  Escolher tipo manualmente
+                </button>
+              </div>
+              {openSections.has("ct") && (
+                <div className="space-y-2">
+                  {options?.content_types.filter((c) => c.id !== "analise").map((ct) => (
+                    <DetailCard
+                      key={ct.id}
+                      id={`ct_${ct.id}`}
+                      name={ct.name}
+                      description={ct.description}
+                      detail={ct.detail}
+                      selected={false}
+                      onSelect={() => { setContentType(ct.id); closeSection("ct"); }}
+                      expandedDetail={expandedDetail}
+                      setExpandedDetail={setExpandedDetail}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : openSections.has("ct") ? (
             <div className="space-y-3">
               {options?.content_types.map((ct) => (
                 <div key={ct.id}>
@@ -393,7 +424,7 @@ function NewJob() {
         </section>
 
         {/* Motores */}
-        <section className="border border-gray-800 rounded-lg p-5">
+        {contentType !== "analise" && <section className="border border-gray-800 rounded-lg p-5">
           <h2 className="text-lg font-semibold mb-4">Motores de IA</h2>
 
           {/* ASR Engine */}
@@ -724,10 +755,10 @@ function NewJob() {
               Usar modelo grande (M2M100 1.2B - melhor qualidade)
             </label>
           )}
-        </section>
+        </section>}
 
         {/* Multiplos Falantes */}
-        <section className="border border-gray-800 rounded-lg p-5">
+        {contentType !== "analise" && <section className="border border-gray-800 rounded-lg p-5">
           <label className="flex items-center gap-3 cursor-pointer">
             <input
               type="checkbox"
@@ -774,10 +805,10 @@ function NewJob() {
               )}
             </div>
           )}
-        </section>
+        </section>}
 
         {/* Opcoes Avancadas */}
-        <section className="border border-gray-800 rounded-lg p-5">
+        {contentType !== "analise" && <section className="border border-gray-800 rounded-lg p-5">
           <button type="button" onClick={() => setShowAdvanced(!showAdvanced)}
             className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors">
             <span className={`transform transition-transform ${showAdvanced ? "rotate-90" : ""}`}>&#9654;</span>
@@ -896,7 +927,7 @@ function NewJob() {
               </div>
             </div>
           )}
-        </section>
+        </section>}
 
         {/* Submit */}
         <div className="space-y-2">
@@ -907,6 +938,8 @@ function NewJob() {
               ? uploadProgress !== null
                 ? `Enviando... ${uploadProgress}%`
                 : "Iniciando..."
+              : contentType === "analise"
+              ? "Analisar Vídeo"
               : "Iniciar Dublagem"}
           </button>
           {loading && uploadProgress !== null && (

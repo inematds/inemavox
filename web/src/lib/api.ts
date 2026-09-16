@@ -60,6 +60,13 @@ export async function createJob(config: Record<string, unknown>) {
   return fetchApi("/api/jobs", { method: "POST", body: JSON.stringify(config) });
 }
 
+export async function approveJob(jobId: string, config: Record<string, unknown>) {
+  return fetchApi(`/api/jobs/${jobId}/approve`, {
+    method: "PATCH",
+    body: JSON.stringify(config),
+  });
+}
+
 export async function createJobWithUpload(
   file: File,
   config: Record<string, unknown>,
@@ -316,6 +323,10 @@ export async function retryJob(jobId: string) {
 
 export async function deleteJob(jobId: string) {
   return fetchApi(`/api/jobs/${jobId}?delete=true`, { method: "DELETE" });
+}
+
+export async function setJobAnalyzed(jobId: string, analyzed: boolean) {
+  return fetchApi(`/api/jobs/${jobId}/analyzed?value=${analyzed}`, { method: "POST" });
 }
 
 export function getDownloadUrl(jobId: string) {

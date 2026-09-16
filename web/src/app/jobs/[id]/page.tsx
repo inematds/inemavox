@@ -8,7 +8,7 @@ import {
   getClips, getClipUrl, getClipsZipUrl, getTranscriptUrl,
   getTranscriptSummary, getVideoSummary,
   getDownloadFileUrl, getAudioUrl,
-  createJobWebSocket,
+  createJobWebSocket, setJobAnalyzed, approveJob, getOllamaModels,
 } from "@/lib/api";
 
 type JobData = Record<string, unknown>;
@@ -159,8 +159,25 @@ export default function JobDetail() {
   }, [job, fetchClips, jobId]);
 
   useEffect(() => {
+    let pollInterval: ReturnType<typeof setInterval> | null = null;
+    let ws: WebSocket | null = null;
+
+    function startPoll() {
+      if (pollInterval) return;
+      pollInterval = setInterval(() => {
+        getJob(jobId).then((j) => {
+          setJob(j as JobData);
+          const s = (j as JobData)?.status as string;
+          // Para de fazer poll quando job entrar em estado final ou waiting_approval
+          if (s === "completed" || s === "failed" || s === "cancelled" || s === "waiting_approval") {
+            if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+          }
+        }).catch(() => {});
+      }, 4000);
+    }
+
     try {
-      const ws = createJobWebSocket(jobId);
+      ws = createJobWebSocket(jobId);
       wsRef.current = ws;
       ws.onmessage = (event) => {
         try {
@@ -169,8 +186,16 @@ export default function JobDetail() {
           if (data.type === "log") setLogs((prev) => [...prev.slice(-500), data]);
         } catch { /* ignore */ }
       };
-      return () => { ws.close(); };
-    } catch { return; }
+      ws.onclose = () => { startPoll(); };
+      ws.onerror = () => { startPoll(); };
+    } catch {
+      startPoll();
+    }
+
+    return () => {
+      ws?.close();
+      if (pollInterval) clearInterval(pollInterval);
+    };
   }, [jobId]);
 
   useEffect(() => {
@@ -204,6 +229,13 @@ export default function JobDetail() {
     router.push(`${route}?prefill=${prefill}`);
   };
 
+  const handleToggleAnalyzed = async () => {
+    if (!job) return;
+    const current = Boolean(job.analyzed);
+    setJob({ ...job, analyzed: !current });
+    try { await setJobAnalyzed(jobId, !current); } catch { fetchJob(); }
+  };
+
   if (!job && !error) {
     return (
       <div className="max-w-4xl mx-auto">
@@ -223,11 +255,14 @@ export default function JobDetail() {
   const isActive = status === "running" || status === "queued";
   const isCompleted = status === "completed";
   const isFailed = status === "failed";
+  const isWaitingApproval = status === "waiting_approval";
   const jobType = String(config.job_type || "dubbing");
 
   const etaText = String(progress.eta_text || "");
   const elapsedS = Number(progress.elapsed_s || job?.duration_s || 0);
   const percent = Number(progress.percent || (isCompleted ? 100 : 0));
+  const videoDurationS = Number(job?.video_duration_s || 0);
+  const videoTitle = String(job?.video_title || "");
 
   const statusLabels: Record<string, { color: string; label: string }> = {
     running: { color: "text-blue-400", label: "Em andamento" },
@@ -235,6 +270,7 @@ export default function JobDetail() {
     failed: { color: "text-red-400", label: "Falhou" },
     queued: { color: "text-yellow-400", label: "Na fila" },
     cancelled: { color: "text-gray-400", label: "Cancelado" },
+    waiting_approval: { color: "text-purple-400", label: "Aguardando aprovação" },
   };
   const sl = statusLabels[status] || { color: "text-gray-400", label: status };
 
@@ -269,6 +305,11 @@ export default function JobDetail() {
               {device === "cuda" ? "GPU" : "CPU"}
             </span>
           </div>
+          {videoTitle && (
+            <p className="text-white font-medium text-sm mb-0.5 truncate max-w-xl" title={videoTitle}>
+              {videoTitle}
+            </p>
+          )}
           <p className="text-gray-500 text-sm">
             {job?.created_at ? new Date(Number(job.created_at) * 1000).toLocaleString("pt-BR") : "-"}
             {jobType === "dubbing" && (
@@ -307,13 +348,22 @@ export default function JobDetail() {
           </p>
         </div>
         <div className="flex gap-2">
+          <button onClick={handleToggleAnalyzed}
+            className={`px-4 py-2 rounded-lg text-sm transition-colors border ${
+              job?.analyzed
+                ? "bg-green-600/20 border-green-500/40 text-green-400 hover:bg-green-600/30"
+                : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700 hover:border-gray-600"
+            }`}
+            title={job?.analyzed ? "Desmarcar como analisado" : "Marcar como analisado"}>
+            {job?.analyzed ? "✓ Analisado" : "Marcar analisado"}
+          </button>
           {isActive && (
             <button onClick={handleCancel} disabled={cancelling}
               className="bg-red-600 hover:bg-red-700 disabled:bg-gray-700 text-white px-4 py-2 rounded-lg text-sm transition-colors">
               {cancelling ? "Cancelando..." : "Cancelar"}
             </button>
           )}
-          {(status === "failed" || status === "cancelled") && (
+          {!isActive && (
             <button onClick={handleRetry}
               className="bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/40 text-blue-400 px-4 py-2 rounded-lg text-sm transition-colors">
               ↺ Re-tentar
@@ -347,7 +397,12 @@ export default function JobDetail() {
               </div>
               <div className="text-right">
                 <span className="text-2xl font-bold font-mono text-blue-400">{percent}%</span>
-                <div className="text-xs text-gray-500">{formatTime(elapsedS)} decorrido</div>
+                <div className="text-xs text-gray-500">
+                  {formatTime(elapsedS)} decorrido
+                  {videoDurationS > 0 && (
+                    <span className="ml-2 text-gray-600">· {formatTime(videoDurationS)} de conteúdo</span>
+                  )}
+                </div>
               </div>
             </div>
           ) : (
@@ -373,27 +428,31 @@ export default function JobDetail() {
               const isDone = stage.status === "done";
               const isRunning = stage.status === "running";
               const isPending = stage.status === "pending";
-              // Stage was running when job stopped — mark as interrupted
-              const isInterrupted = isRunning && !isActive;
+              // waiting_approval: pipeline pausou intencionalmente, próxima etapa não rodou
+              const isPaused = isRunning && status === "waiting_approval";
+              // Stage was running when job stopped unexpectedly — mark as interrupted
+              const isInterrupted = isRunning && !isActive && !isPaused;
 
               return (
                 <div key={stage.id}
                   className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm ${
                     isInterrupted ? "bg-red-500/10 border border-red-500/30" :
+                    isPaused ? "bg-purple-500/10 border border-purple-500/30 opacity-60" :
                     isRunning ? "bg-blue-500/10 border border-blue-500/30" :
                     isDone ? "bg-gray-800/50" : "opacity-40"
                   }`}>
                   {/* Status icon */}
                   <div className={`w-6 text-center ${
-                    isDone ? "text-green-400" : isInterrupted ? "text-red-400" : isRunning ? "text-blue-400" : "text-gray-600"
+                    isDone ? "text-green-400" : isInterrupted ? "text-red-400" : isPaused ? "text-purple-400" : isRunning ? "text-blue-400" : "text-gray-600"
                   }`}>
-                    {isDone ? "✓" : isInterrupted ? "✗" : isRunning ? "▸" : "○"}
+                    {isDone ? "✓" : isInterrupted ? "✗" : isPaused ? "⏸" : isRunning ? "▸" : "○"}
                   </div>
 
                   {/* Step number + name */}
                   <div className="w-6 text-center text-gray-500 font-mono text-xs">{stage.num}</div>
                   <div className={`flex-1 ${
                     isInterrupted ? "text-red-300" :
+                    isPaused ? "text-purple-300" :
                     isRunning ? "text-white font-medium" :
                     isDone ? "text-gray-400" : "text-gray-600"
                   }`}>
@@ -463,6 +522,9 @@ export default function JobDetail() {
           <pre className="text-sm text-red-300 whitespace-pre-wrap font-mono">{String(job.error)}</pre>
         </section>
       )}
+
+      {/* Aprovação de análise */}
+      {isWaitingApproval && <ApprovalSection job={job} jobId={String(params.id)} onApproved={() => router.refresh()} />}
 
       {/* Results - Dubbing */}
       {isCompleted && jobType === "dubbing" && (
@@ -835,5 +897,190 @@ export default function JobDetail() {
         )}
       </section>
     </div>
+  );
+}
+
+// ─── Componente de Aprovação de Análise ──────────────────────────────────────
+
+type AnalysisData = {
+  cps_original: number;
+  total_duration: number;
+  segment_count: number;
+  avg_segment_duration: number;
+  translation_expansion: number;
+  transcription_sample: string;
+  recommended: {
+    content_type: string;
+    sync_mode: string;
+    maxstretch: number;
+    no_truncate: boolean;
+    justificativa: string;
+  };
+};
+
+function ApprovalSection({ job, jobId, onApproved }: { job: JobData | null; jobId: string; onApproved: () => void }) {
+  const analysis = job?.analysis as AnalysisData | null;
+  const rec = analysis?.recommended;
+
+  const [contentType, setContentType] = useState(rec?.content_type ?? "palestra");
+  const [syncMode, setSyncMode] = useState(rec?.sync_mode ?? "smart");
+  const [maxstretch, setMaxstretch] = useState(rec?.maxstretch ?? 1.3);
+  const [noTruncate, setNoTruncate] = useState(rec?.no_truncate ?? false);
+  const [ttsEngine, setTtsEngine] = useState((rec as Record<string, unknown>)?.tts_engine as string ?? "edge");
+  const [asrEngine, setAsrEngine] = useState((rec as Record<string, unknown>)?.asr_engine as string ?? "whisper");
+  const [translationEngine, setTranslationEngine] = useState((rec as Record<string, unknown>)?.translation_engine as string ?? "m2m100");
+  const recOllamaModel = (rec as Record<string, unknown>)?.ollama_model as string ?? "";
+  const [ollamaModel, setOllamaModel] = useState(recOllamaModel);
+  const [ollamaModels, setOllamaModels] = useState<{id: string; name: string}[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (translationEngine === "ollama") {
+      getOllamaModels().then(data => {
+        setOllamaModels(data || []);
+        // só preenche se ainda não tem valor (recomendado ou digitado)
+        if (!ollamaModel && data?.length > 0) setOllamaModel(data[0].id);
+      }).catch(() => {});
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [translationEngine]);
+
+  if (!analysis) return null;
+
+  async function handleConfirm() {
+    setSubmitting(true);
+    try {
+      await approveJob(jobId, {
+        content_type: contentType,
+        sync_mode: syncMode,
+        maxstretch,
+        no_truncate: noTruncate,
+        tts_engine: ttsEngine,
+        asr_engine: asrEngine,
+        translation_engine: translationEngine,
+        ...(translationEngine === "ollama" && ollamaModel ? { ollama_model: ollamaModel } : {}),
+      });
+      onApproved();
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function fmt(n: number, dec = 1) { return n.toFixed(dec); }
+  function fmtMin(s: number) {
+    const m = Math.floor(s / 60); const sec = Math.round(s % 60);
+    return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+  }
+
+  return (
+    <section className="border border-purple-500/30 bg-purple-500/5 rounded-lg p-5 mb-6">
+      <h2 className="text-lg font-semibold text-purple-400 mb-4">Análise Concluída — Confirme os Parâmetros</h2>
+
+      {/* Métricas */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+        {[
+          { label: "Duração", value: fmtMin(analysis.total_duration) },
+          { label: "CPS original", value: fmt(analysis.cps_original) },
+          { label: "Expansão tradução", value: `${fmt((analysis.translation_expansion - 1) * 100, 0)}%` },
+          { label: "Segmentos", value: String(analysis.segment_count) },
+        ].map(({ label, value }) => (
+          <div key={label} className="bg-gray-800/60 rounded-lg p-3 text-center">
+            <div className="text-xs text-gray-400 mb-1">{label}</div>
+            <div className="text-lg font-semibold text-white">{value}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Justificativa */}
+      {rec?.justificativa && (
+        <div className="bg-purple-500/10 border border-purple-500/20 rounded-lg p-3 mb-5 text-sm text-purple-200">
+          💡 {rec.justificativa}
+        </div>
+      )}
+
+      {/* Transcrição */}
+      {analysis.transcription_sample && (
+        <details className="mb-5">
+          <summary className="text-sm text-gray-400 cursor-pointer hover:text-gray-200">Amostra da transcrição</summary>
+          <p className="mt-2 text-sm text-gray-300 italic">{analysis.transcription_sample}</p>
+        </details>
+      )}
+
+      {/* Parâmetros editáveis */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
+        <div>
+          <label className="block text-sm text-gray-400 mb-1">Tipo de Conteúdo</label>
+          <select value={contentType} onChange={e => setContentType(e.target.value)}
+            className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white">
+            {["tutorial","palestra","curso","podcast","apresentacao","narracao","shorts","filme"].map(t => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm text-gray-400 mb-1">Sincronização</label>
+          <select value={syncMode} onChange={e => setSyncMode(e.target.value)}
+            className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white">
+            {["smart","fit","extend","pad","none"].map(s => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm text-gray-400 mb-1">
+            Compressão máx: <span className="text-white font-medium">{fmt((maxstretch - 1) * 100, 0)}%</span>
+          </label>
+          <input type="range" min={1.0} max={2.0} step={0.05} value={maxstretch}
+            onChange={e => setMaxstretch(Number(e.target.value))}
+            className="w-full accent-purple-500" />
+        </div>
+        <div className="flex items-center gap-3 pt-4">
+          <input type="checkbox" id="noTruncate" checked={noTruncate} onChange={e => setNoTruncate(e.target.checked)}
+            className="w-4 h-4 accent-purple-500" />
+          <label htmlFor="noTruncate" className="text-sm text-gray-300">Frases completas (no-truncate)</label>
+        </div>
+        <div>
+          <label className="block text-sm text-gray-400 mb-1">Motor TTS</label>
+          <select value={ttsEngine} onChange={e => setTtsEngine(e.target.value)}
+            className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white">
+            {["edge","chatterbox","xtts","bark"].map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm text-gray-400 mb-1">Transcrição (ASR)</label>
+          <select value={asrEngine} onChange={e => setAsrEngine(e.target.value)}
+            className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white">
+            {["parakeet","whisper","whisper_gpu"].map(a => <option key={a} value={a}>{a}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm text-gray-400 mb-1">Tradução</label>
+          <select value={translationEngine} onChange={e => setTranslationEngine(e.target.value)}
+            className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white">
+            {["m2m100","ollama"].map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+        {translationEngine === "ollama" && (
+          <div className="md:col-span-2">
+            <label className="block text-sm text-gray-400 mb-1">Modelo Ollama</label>
+            {ollamaModels.length > 0 ? (
+              <select value={ollamaModel} onChange={e => setOllamaModel(e.target.value)}
+                className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white">
+                {ollamaModels.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+              </select>
+            ) : (
+              <input value={ollamaModel} onChange={e => setOllamaModel(e.target.value)}
+                placeholder="ex: qwen2.5:14b"
+                className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500" />
+            )}
+          </div>
+        )}
+      </div>
+
+      <button onClick={handleConfirm} disabled={submitting}
+        className="w-full py-3 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 rounded-lg font-semibold text-white transition-colors">
+        {submitting ? "Iniciando dublagem..." : "✓ Confirmar e Dublar"}
+      </button>
+    </section>
   );
 }

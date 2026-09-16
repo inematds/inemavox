@@ -31,7 +31,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-APP_VERSION = "1.14.5"
+APP_VERSION = "1.15.4"
 
 app = FastAPI(
     title="inemaVOX API",
@@ -341,6 +341,171 @@ async def create_transcription_job_with_upload(
     return job.to_dict()
 
 
+# --- Audio Sources: Musica e SFX (Freesound) ---
+# Endpoints sincronos (nao usam a fila de jobs) porque a busca/download eh rapida.
+# Requer FREESOUND_API_KEY setada no .env.
+# Ver audio_sources.py (modulo compartilhado) e musica_v1.py / sfx_v1.py (CLIs).
+
+@app.post("/api/audio/search")
+async def audio_search(body: dict):
+    """Busca musica ou SFX no Freesound.
+
+    Body:
+      {
+        "query": "tech ambient",
+        "kind": "music" | "sfx",
+        "min_duration": 15, "max_duration": 120,
+        "per_page": 10,
+        "page": 1,
+        "mood": "upbeat",                    # opcional — tag adicional AND
+        "license_filter": "cc0"|"cc_by"|"", # opcional — restringe licenca
+        "sort": "rating"|"downloads"|"recent"|"duration_asc"|"duration_desc"|"score",
+        "translate": true                    # opcional, default true para kind=sfx
+      }
+
+    Quando kind=sfx e translate=true (default), a query em PT-BR eh traduzida
+    automaticamente para EN via dicionario curado antes de bater no Freesound,
+    ja que o Freesound indexa em ingles. O campo `translated_query` no retorno
+    mostra o que foi efetivamente enviado pro Freesound.
+    """
+    from audio_sources import search_audio, translate_sfx_query
+    query = (body.get("query") or "").strip()
+    if not query:
+        raise HTTPException(400, "campo 'query' obrigatorio")
+    kind = body.get("kind") or "music"
+    if kind not in ("music", "sfx"):
+        raise HTTPException(400, "kind deve ser 'music' ou 'sfx'")
+
+    # Traducao PT→EN automatica para SFX (opt-out via translate=false)
+    translate_enabled = body.get("translate")
+    if translate_enabled is None:
+        translate_enabled = (kind == "sfx")  # default: true pra sfx, false pra music
+    translated_query = query
+    was_translated = False
+    if translate_enabled:
+        translated_query, was_translated = translate_sfx_query(query)
+
+    try:
+        hits = search_audio(
+            query=translated_query,
+            kind=kind,
+            min_duration=int(body.get("min_duration") or 0),
+            max_duration=int(body.get("max_duration") or 0),
+            per_page=int(body.get("per_page") or 10),
+            page=int(body.get("page") or 1),
+            mood=(body.get("mood") or "").strip(),
+            license_filter=(body.get("license_filter") or "").strip(),
+            sort=(body.get("sort") or "rating").strip(),
+        )
+    except Exception as e:
+        raise HTTPException(502, f"busca falhou: {e}")
+
+    return {
+        "query": query,                            # original do usuario
+        "translated_query": translated_query,      # o que foi enviado pro Freesound
+        "was_translated": was_translated,          # indica se o dicionario modificou algo
+        "kind": kind,
+        "page": int(body.get("page") or 1),
+        "count": len(hits),
+        "results": [h.to_dict() for h in hits],
+    }
+
+
+@app.post("/api/audio/download")
+async def audio_download(body: dict):
+    """Baixa um hit previamente retornado pela busca.
+
+    Body:
+      { "source": "freesound", "external_id": "12345",
+        "preview_url": "https://...", "name": "...", "kind": "music"|"sfx",
+        "license": "...", "author": "..." }
+
+    Retorna JSON com o path local onde o mp3 foi salvo.
+    """
+    import urllib.request
+    preview_url = (body.get("preview_url") or "").strip()
+    source = body.get("source") or "unknown"
+    external_id = str(body.get("external_id") or "anon")
+    name = body.get("name") or "audio"
+    kind = body.get("kind") or "music"
+
+    if not preview_url:
+        raise HTTPException(400, "preview_url obrigatorio")
+    if kind not in ("music", "sfx"):
+        raise HTTPException(400, "kind deve ser 'music' ou 'sfx'")
+
+    # Salva em jobs/audio_library/{kind}/
+    lib_dir = JOBS_DIR / "audio_library" / kind
+    lib_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = "".join(c if c.isalnum() or c in ("-", "_") else "_"
+                        for c in name)[:40]
+    filename = f"{source}_{external_id}_{safe_name}.mp3"
+    dest = lib_dir / filename
+
+    if not dest.exists() or dest.stat().st_size < 1000:
+        try:
+            req = urllib.request.Request(preview_url, headers={"User-Agent": "inemaVOX/1.0"})
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                with open(dest, "wb") as f:
+                    while True:
+                        chunk = resp.read(64 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+        except Exception as e:
+            raise HTTPException(502, f"download falhou: {e}")
+
+    return {
+        "ok": True,
+        "kind": kind,
+        "path": str(dest),
+        "relative_path": str(dest.relative_to(JOBS_DIR.parent)) if JOBS_DIR.parent in dest.parents else str(dest),
+        "size_bytes": dest.stat().st_size,
+        "meta": {
+            "source": source,
+            "external_id": external_id,
+            "name": name,
+            "license": body.get("license", ""),
+            "author": body.get("author", ""),
+        },
+    }
+
+
+@app.get("/api/audio/library")
+async def audio_library(kind: str = "music"):
+    """Lista os arquivos ja baixados em jobs/audio_library/{kind}/."""
+    if kind not in ("music", "sfx"):
+        raise HTTPException(400, "kind deve ser 'music' ou 'sfx'")
+    lib_dir = JOBS_DIR / "audio_library" / kind
+    if not lib_dir.exists():
+        return {"kind": kind, "count": 0, "files": []}
+    files = []
+    for p in sorted(lib_dir.glob("*.mp3")):
+        files.append({
+            "name": p.name,
+            "path": str(p),
+            "size_bytes": p.stat().st_size,
+            "mtime": p.stat().st_mtime,
+        })
+    return {"kind": kind, "count": len(files), "files": files}
+
+
+@app.get("/api/audio/file")
+async def audio_file(path: str):
+    """Serve um arquivo mp3 da audio_library para playback no frontend."""
+    from urllib.parse import unquote
+    raw = unquote(path)
+    target = Path(raw).resolve()
+    lib_root = (JOBS_DIR / "audio_library").resolve()
+    # Seguranca: so serve arquivos dentro de audio_library
+    if lib_root not in target.parents:
+        raise HTTPException(403, "caminho fora da audio_library")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(404, "arquivo nao encontrado")
+    return FileResponse(str(target), media_type="audio/mpeg")
+
+
 # --- Jobs: General endpoints ---
 
 @app.post("/api/jobs")
@@ -371,6 +536,17 @@ async def create_job_with_upload(
     config["input"] = str(upload_path.absolute())
     job = await job_manager.create_job(config)
     return job.to_dict()
+
+
+@app.patch("/api/jobs/{job_id}/approve")
+async def approve_job(job_id: str, body: dict):
+    """Aprova parâmetros de análise e retoma pipeline a partir da etapa 5."""
+    body["_resume_from_stage"] = 5
+    try:
+        await job_manager.resume_job(job_id, body)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
 
 
 @app.get("/api/jobs")
@@ -739,10 +915,20 @@ async def retry_job(job_id: str):
     job = job_manager.get_job(job_id)
     if not job:
         raise HTTPException(404, "Job nao encontrado")
-    if job.status not in ("failed", "cancelled"):
-        raise HTTPException(400, f"Somente jobs failed/cancelled podem ser re-tentados (status atual: {job.status})")
+    if job.status not in ("failed", "cancelled", "completed"):
+        raise HTTPException(400, f"Somente jobs finalizados podem ser re-tentados (status atual: {job.status})")
     new_job = await job_manager.create_job(dict(job.config))
     return {"id": new_job.id, "status": new_job.status}
+
+
+@app.post("/api/jobs/{job_id}/analyzed")
+async def set_job_analyzed(job_id: str, value: bool = True):
+    """Marca/desmarca job como analisado. Persiste via flag em disco."""
+    job = job_manager.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "Job nao encontrado")
+    ok = job.set_analyzed(value)
+    return {"analyzed": job.analyzed, "ok": ok}
 
 
 @app.delete("/api/jobs/{job_id}")

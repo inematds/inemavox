@@ -168,6 +168,13 @@ TRANSLATION_ENGINES = [
 
 CONTENT_TYPES = [
     {
+        "id": "analise",
+        "name": "Análise Automática",
+        "description": "Transcreve, traduz, escolhe os melhores parâmetros e já dubla direto (sem espera).",
+        "detail": "Roda transcrição e tradução, analisa CPS, duração e expansão do texto, escolhe o tipo de vídeo ideal e aplica os parâmetros automaticamente, seguindo direto para a dublagem. Para inspecionar e aprovar antes, use o modo revisão (review).",
+        "presets": {},
+    },
+    {
         "id": "tutorial",
         "name": "Tutorial / Apresentacao",
         "description": "Screencast, tutorial, demo, social media. Fala natural, sem cortes.",
@@ -186,7 +193,7 @@ CONTENT_TYPES = [
         "name": "Curso / Aula",
         "description": "Conteudo educacional. Nunca corta frases, comprime bastante se preciso.",
         "detail": "Mantem todas as frases completas sem cortar nenhuma palavra. Se a traducao ficar mais longa que o original, comprime a velocidade da fala em ate 2x. Ideal para cursos e aulas onde perder conteudo e inaceitavel, mesmo que a fala fique um pouco mais rapida.",
-        "presets": {"sync": "smart", "maxstretch": 2.0, "no_truncate": True},
+        "presets": {"sync": "fit", "maxstretch": 1.4, "no_truncate": True},
     },
     {
         "id": "podcast",

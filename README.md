@@ -8,6 +8,11 @@ Suite de voz com IA local. Dubla, transcreve, corta e baixa videos com modelos r
 
 **Versao atual: 1.9.3**
 
+> **Esta e a versao GPU-first do inemaVOX.** Requer GPU com pelo menos ~8 GB de VRAM
+> para rodar Chatterbox TTS/VC e Whisper local. Se voce precisa rodar em maquina
+> **sem GPU** (VPS, laptop antigo, servidor cloud basico), use o **inemaVOX 2** —
+> mesmo produto, mas tudo via API cloud (Groq, OpenAI) ou processamento em CPU.
+
 ---
 
 ## Recursos
@@ -63,7 +68,7 @@ O inemavox roda **diretamente no host** (sem Docker para API e frontend). O Olla
 |---|---|---|
 | Frontend (Next.js) | processo local (`npm run dev`) | `:3010` |
 | API (FastAPI + uvicorn) | processo local (venv Python) | `:8010` |
-| Ollama | Docker container `ollama-open` | `:11434` |
+| Ollama | Docker container `openclaw-ollama` | `:11434` |
 
 O projeto tambem tem suporte a modo Docker completo (`./start.sh --docker`) via `docker-compose.yml`, mas para hardware GB10 o modo local e preferido por facilitar o acesso direto a GPU e ao venv com patches de compatibilidade ja aplicados.
 
@@ -83,7 +88,7 @@ O projeto tambem tem suporte a modo Docker completo (`./start.sh --docker`) via 
 
 ```bash
 # Ollama (Docker)
-docker start ollama-open
+docker start openclaw-ollama
 
 # Backend (usar o venv do projeto)
 ./venv/bin/uvicorn api.server:app --host 0.0.0.0 --port 8010 --reload &
@@ -464,11 +469,11 @@ curl http://localhost:8010/api/health
 ```bash
 curl http://localhost:11434/api/tags
 # Se falhar, iniciar o container:
-docker start ollama-open
+docker start openclaw-ollama
 
 # Se a porta estiver ocupada pelo ollama.service do sistema:
 systemctl stop ollama && systemctl disable ollama
-docker start ollama-open
+docker start openclaw-ollama
 ```
 
 ### Ollama nao usa GPU (GB10 iGPU — CUDA backend)
@@ -477,14 +482,14 @@ O Ollama (v0.17.4+) no GB10 usa `cuda_v13` para inferencia. Se a GPU nao for det
 
 ```bash
 # Copiar libs CUDA 12 do cuda_jetpack6 para cuda_v13 (nao remover as .so.13 originais)
-docker exec ollama-open bash -c "
+docker exec openclaw-ollama bash -c "
   cp /usr/lib/ollama/cuda_jetpack6/libcudart.so.12* /usr/lib/ollama/cuda_v13/
   cp /usr/lib/ollama/cuda_jetpack6/libcublas* /usr/lib/ollama/cuda_v13/
 "
-docker restart ollama-open
+docker restart openclaw-ollama
 
 # Verificar — deve aparecer "library=CUDA" e "NVIDIA GB10":
-docker logs ollama-open 2>&1 | grep "inference compute"
+docker logs openclaw-ollama 2>&1 | grep "inference compute"
 ```
 
 **Nota:** Nao substituir o `libggml-cuda.so` — o do jetpack6 quebra o NVML discovery.

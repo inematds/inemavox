@@ -49,6 +49,9 @@ def main():
         language=args.lang or None,
         fp16=fp16,
         verbose=False,
+        condition_on_previous_text=False,   # evita loop de alucinacao entre chunks
+        no_speech_threshold=0.6,            # descarta silencio/ruido antes de alucinar
+        compression_ratio_threshold=2.0,    # detecta e descarta texto repetitivo
     )
 
     segments = [

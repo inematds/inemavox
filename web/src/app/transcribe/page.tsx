@@ -1,11 +1,20 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { getOptions, createTranscriptionJob, createTranscriptionJobWithUpload } from "@/lib/api";
 
 export default function TranscribePage() {
+  return (
+    <Suspense>
+      <Transcribe />
+    </Suspense>
+  );
+}
+
+function Transcribe() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [loading, setLoading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -28,6 +37,20 @@ export default function TranscribePage() {
       if (opts.whisper_models) setWhisperModels(opts.whisper_models);
       if (opts.languages) setLanguages(opts.languages);
     }).catch(() => setError("API offline. Inicie o backend."));
+  }, []);
+
+  // Pre-preencher a partir de ?prefill= (retry de job existente)
+  useEffect(() => {
+    const raw = searchParams.get("prefill");
+    if (!raw) return;
+    try {
+      const cfg = JSON.parse(decodeURIComponent(raw)) as Record<string, unknown>;
+      if (cfg.input && typeof cfg.input === "string") setInput(cfg.input);
+      if (cfg.asr_engine) setAsrEngine(String(cfg.asr_engine));
+      if (cfg.whisper_model) setWhisperModel(String(cfg.whisper_model));
+      if (cfg.src_lang) setSrcLang(String(cfg.src_lang));
+    } catch { /* ignorar parse errors */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {

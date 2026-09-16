@@ -116,6 +116,7 @@ def main():
     print(f"[chatterbox_worker] modelo carregado em {time.time()-t0:.1f}s (device={device})", flush=True)
 
     seg_results = []
+    any_failed = False
 
     for i, seg in enumerate(segments, 1):
         txt = (seg.get("text_trad") or seg.get("text") or "").strip()
@@ -159,9 +160,20 @@ def main():
 
         except Exception as e:
             print(f"[chatterbox_worker] ERRO seg {i}: {e}", flush=True)
+            # Grava silencio so pra manter o timing do JSON consistente p/ debug —
+            # NAO e mais tratado como sucesso: any_failed derruba o job (ver abaixo).
+            # Antes disso passava despercebido: o job "concluia" normalmente com
+            # audio mudo no lugar (bug real, 3+ meses sem detectar - ver CLAUDE.md).
             salvar_silencio(out_path, target_dur)
             actual_dur = target_dur
             ratio = 1.0
+            any_failed = True
+            seg_results.append({
+                "idx": i, "file": str(out_path),
+                "target": target_dur, "actual": actual_dur, "ratio": ratio,
+                "error": str(e),
+            })
+            continue
 
         seg_results.append({
             "idx": i, "file": str(out_path),
@@ -174,6 +186,12 @@ def main():
     result = {"sr": CHATTERBOX_SR, "segments": seg_results}
     with open(args.output_json, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
+
+    if any_failed:
+        n_failed = sum(1 for s in seg_results if s.get("error"))
+        print(f"[chatterbox_worker] FALHOU: {n_failed}/{len(seg_results)} segmentos com erro "
+              f"(silencio gravado so p/ debug de timing, job marcado como falho)", flush=True)
+        sys.exit(1)
 
     print(f"[chatterbox_worker] concluido: {len(seg_results)} segmentos", flush=True)
 

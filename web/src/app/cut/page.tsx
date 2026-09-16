@@ -79,7 +79,7 @@ export default function CutPage() {
 
   // LLM provider
   const [llmProvider, setLlmProvider] = useState<"ollama" | "openai" | "anthropic" | "groq" | "deepseek" | "together" | "openrouter" | "custom">("ollama");
-  const [ollamaModel, setOllamaModel] = useState("qwen2.5:7b");
+  const [ollamaModel, setOllamaModel] = useState("qwen3.8-64k:latest");
   const [llmModel, setLlmModel] = useState("");
   const [llmApiKey, setLlmApiKey] = useState("");
   const [llmBaseUrl, setLlmBaseUrl] = useState("");

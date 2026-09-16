@@ -2,6 +2,25 @@
 
 ---
 
+## v1.15.4 — análise auto-executa + heurística por densidade (2026-06-18)
+
+### Heurística de parâmetros (`_recomendar_params`)
+- **Densidade agora tem prioridade sobre duração.** A regra `cps >= 15 ou expansion > 1.3` (preset "curso": `no_truncate=True`, `maxstretch=1.4`, sync `fit`) passou a ser avaliada ANTES da regra de vídeo curto (`total_dur < 180`). Antes, um vídeo curto mas denso (ex.: 179s a 17.9 CPS) caía em "shorts" (`maxstretch=1.1`, truncate ligado) e cortava a fala. Agora cai no preset anti-corte.
+
+### Análise não pausa mais (vai direto pra execução)
+- `content_type="analise"` agora **aplica os parâmetros recomendados e segue direto** pro TTS/sync/mux, em vez de parar em `waiting_approval`.
+- Novos flags no `dublar_pro_v5.py`: `--analyze` (roda análise e segue) e `--review` (opt-in: pausa pra aprovação manual). `--pause-after-translate` virou alias de `--analyze --review` (compat).
+- `job_manager`: passa `--analyze` para `content_type="analise"`, e só adiciona `--review` se `config.review=True`. Job concluído passa a carregar o `analysis.json` (visibilidade do que foi decidido mesmo sem pausa).
+- Salvaguarda: na fase de análise o texto nunca é truncado (frase completa), o sync ajusta a duração.
+
+### Fix
+- `--help` voltou a funcionar (um `%` solto no help do `--maxstretch` quebrava o argparse inteiro).
+
+**Versões:** API 1.15.4, web 1.15.5, pipeline `dublar_pro_v5` 1.1.0.
+**Pendente:** sincronização fala↔frames para demonstrações (ver `docs/TODO-sync-frames-demonstracao.md`).
+
+---
+
 ## v1.8.3 — diarização funcionando (2026-02-24)
 
 ### Fix diarização (torchaudio 2.10 + pyannote 3.1.1)

@@ -303,6 +303,7 @@ def main():
     is_reel = "/reel/" in url or "/share/r/" in url
     is_youtube = "youtube.com" in url or "youtu.be" in url
     is_tiktok = "tiktok.com" in url
+    is_instagram = "instagram.com" in url
 
     if is_facebook:
         try:
@@ -311,11 +312,14 @@ def main():
         except ImportError:
             pass
 
-    if is_facebook or is_youtube or is_tiktok:
+    if is_facebook or is_youtube or is_tiktok or is_instagram:
         firefox_profile = _find_firefox_profile()
         if is_tiktok:
             site_label = "TikTok"
             cookies_filename = "tiktok_cookies.txt"
+        elif is_instagram:
+            site_label = "Instagram"
+            cookies_filename = "instagram_cookies.txt"
         elif is_youtube:
             site_label = "YouTube"
             cookies_filename = "youtube_cookies.txt"
