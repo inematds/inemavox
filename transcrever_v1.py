@@ -190,7 +190,7 @@ def _chatterbox_has_cuda() -> bool:
         return False
 
 
-def transcribe_whisper_gpu(audio_path: Path, model: str, src_lang: str | None) -> list[dict]:
+def transcribe_whisper_gpu(audio_path: Path, model: str, src_lang: str | None, words: bool = False) -> list[dict]:
     """Transcreve via worker GPU usando openai-whisper no conda env chatterbox."""
     worker_script = Path(__file__).parent / "whisper_gpu_worker.py"
     output_json = audio_path.parent / "whisper_gpu_result.json"
@@ -203,6 +203,8 @@ def transcribe_whisper_gpu(audio_path: Path, model: str, src_lang: str | None) -
     ]
     if src_lang:
         cmd += ["--lang", src_lang]
+    if words:
+        cmd += ["--words"]
 
     _free_gpu_ram_for_worker()
     print(f"[transcription] Transcrevendo com Whisper GPU ({model})...", flush=True)
@@ -274,10 +276,11 @@ def transcribe_parakeet(audio_path: Path, model: str, src_lang: str | None) -> l
     return transcribe_whisper_gpu(audio_path, "large-v3", src_lang)
 
 
-def transcribe_whisper(audio_path: Path, model: str, src_lang: str | None) -> list[dict]:
-    """Transcreve com Whisper. Usa GPU via conda env se disponivel, senao faster-whisper CPU."""
+def transcribe_whisper(audio_path: Path, model: str, src_lang: str | None, words: bool = False) -> list[dict]:
+    """Transcreve com Whisper. Usa GPU via conda env se disponivel, senao faster-whisper CPU.
+    words=True grava o tempo de cada palavra em seg["words"] (legenda palavra a palavra)."""
     if _chatterbox_has_cuda():
-        return transcribe_whisper_gpu(audio_path, model, src_lang)
+        return transcribe_whisper_gpu(audio_path, model, src_lang, words)
 
     print(f"[transcription] Transcrevendo com faster-whisper CPU {model}...", flush=True)
     from faster_whisper import WhisperModel
@@ -293,15 +296,20 @@ def transcribe_whisper(audio_path: Path, model: str, src_lang: str | None) -> li
         condition_on_previous_text=False,   # evita loop de alucinacao entre chunks
         no_speech_threshold=0.6,            # descarta silencio/ruido antes de alucinar
         compression_ratio_threshold=2.0,    # detecta e descarta texto repetitivo
+        word_timestamps=words,
     )
 
     results = []
     for seg in segments_iter:
-        results.append({
+        item = {
             "start": round(seg.start, 3),
             "end": round(seg.end, 3),
             "text": seg.text.strip(),
-        })
+        }
+        if words:
+            item["words"] = [{"word": w.word.strip(), "start": round(w.start, 3), "end": round(w.end, 3)}
+                             for w in (seg.words or []) if w.word.strip()]
+        results.append(item)
         print(f"  [{seg.start:.1f}s -> {seg.end:.1f}s] {seg.text.strip()}", flush=True)
 
     print(f"[transcription] {len(results)} segmentos, idioma: {info.language}", flush=True)
@@ -385,6 +393,9 @@ def main():
     parser.add_argument("--whisper-model", default="large-v3", dest="whisper_model")
     parser.add_argument("--parakeet-model", default="nvidia/parakeet-tdt-1.1b", dest="parakeet_model")
     parser.add_argument("--src", default=None, help="Idioma de origem (auto-detect se vazio)")
+    parser.add_argument("--words", action="store_true",
+                        help="Whisper: tempo por palavra em cada segmento + words.json (lista plana); "
+                             "para legenda palavra a palavra (makeshorts, reels)")
     args = parser.parse_args()
 
     outdir = Path(args.outdir)
@@ -419,13 +430,19 @@ def main():
 
         # Etapa 3: Transcription
         if args.asr == "parakeet":
+            if args.words:
+                print("[aviso] --words só vale para --asr whisper; parakeet sai sem tempo por palavra", flush=True)
             segments = transcribe_parakeet(audio, args.parakeet_model or "nvidia/parakeet-tdt-1.1b", args.src)
         else:
-            segments = transcribe_whisper(audio, args.whisper_model, args.src)
+            segments = transcribe_whisper(audio, args.whisper_model, args.src, args.words)
         write_checkpoint(workdir, 3, "transcription", "Transcricao")
 
         # Etapa 4: Export
         export_transcription(segments, outdir)
+        if args.words:
+            flat = [w for seg in segments for w in seg.get("words", [])]
+            (outdir / "words.json").write_text(json.dumps(flat, ensure_ascii=False, indent=1), encoding="utf-8")
+            print(f"[export] {len(flat)} palavras com tempo → {outdir / 'words.json'}", flush=True)
         title = get_video_title(workdir, args.input)
         save_transcript_summary(segments, outdir, title)
         write_checkpoint(workdir, 4, "export", "Exportando legendas")

@@ -33,6 +33,8 @@ def main():
     parser.add_argument("--model", default="large-v3", help="Modelo Whisper")
     parser.add_argument("--lang", default=None, help="Idioma de origem (auto se vazio)")
     parser.add_argument("--output-json", required=True, help="Caminho do JSON de saida")
+    parser.add_argument("--words", action="store_true",
+                        help="tempo por palavra (word_timestamps) em cada segmento — legenda palavra a palavra")
     args = parser.parse_args()
 
     device = get_device()
@@ -52,16 +54,20 @@ def main():
         condition_on_previous_text=False,   # evita loop de alucinacao entre chunks
         no_speech_threshold=0.6,            # descarta silencio/ruido antes de alucinar
         compression_ratio_threshold=2.0,    # detecta e descarta texto repetitivo
+        word_timestamps=args.words,
     )
 
-    segments = [
-        {
+    segments = []
+    for seg in result["segments"]:
+        item = {
             "start": round(seg["start"], 3),
             "end": round(seg["end"], 3),
             "text": seg["text"].strip(),
         }
-        for seg in result["segments"]
-    ]
+        if args.words:
+            item["words"] = [{"word": w["word"].strip(), "start": round(w["start"], 3), "end": round(w["end"], 3)}
+                             for w in seg.get("words", []) if w.get("word", "").strip()]
+        segments.append(item)
 
     print(f"[whisper_gpu] {len(segments)} segmentos, idioma: {result.get('language', '?')}", flush=True)
 
